@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Backlink Builder — Control Panel</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --border: #e2e5ea; --text: #1b1f27;
+    --muted: #6b7280; --accent: #2563eb; --accent-hover: #1d4ed8;
+    --good: #15803d; --warn: #b45309; --bad: #b91c1c; --chip: #eef2ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px; max-width: 980px; margin: 0 auto;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); margin-bottom: 24px; font-size: 0.9rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; margin-bottom: 16px;
+  }
+  .card h2 { margin-top: 0; font-size: 1.05rem; }
+  label { display: block; font-size: 0.82rem; color: var(--muted); margin: 10px 0 4px; }
+  input, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 0.9rem; font-family: inherit; background: #fff; color: var(--text);
+  }
+  textarea { resize: vertical; }
+  button {
+    background: var(--accent); color: #fff; border: none; border-radius: 6px;
+    padding: 8px 14px; font-size: 0.85rem; cursor: pointer; margin-top: 10px; margin-right: 8px;
+  }
+  button:hover { background: var(--accent-hover); }
+  button.secondary { background: #fff; color: var(--text); border: 1px solid var(--border); }
+  button.secondary:hover { background: #f0f1f3; }
+  button.reject { background: #fff; color: var(--bad); border: 1px solid var(--bad); }
+  button.reject:hover { background: #fef2f2; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 160px; }
+  .site-card { border-left: 4px solid var(--accent); }
+  .stats { display: flex; gap: 16px; flex-wrap: wrap; margin: 8px 0; }
+  .stat { font-size: 0.82rem; color: var(--muted); }
+  .stat b { color: var(--text); font-size: 0.95rem; display: block; }
+  .chip {
+    display: inline-block; background: var(--chip); color: var(--accent); font-size: 0.75rem;
+    padding: 2px 8px; border-radius: 999px; margin-right: 6px;
+  }
+  .lead { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-top: 10px; }
+  .lead .url { font-size: 0.85rem; color: var(--muted); word-break: break-all; }
+  .lead .subject { font-weight: 600; margin: 6px 0 2px; }
+  .lead .body { white-space: pre-wrap; font-size: 0.85rem; margin: 6px 0; color: var(--text); }
+  .lead .meta { font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
+  .status-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 999px; }
+  .status-drafted { background: #fef3c7; color: var(--warn); }
+  .status-approved { background: #dcfce7; color: var(--good); }
+  .status-sent { background: #dbeafe; color: var(--accent); }
+  .status-no_contact_found { background: #f3f4f6; color: var(--muted); }
+  .ha-item { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; padding: 4px 0; }
+  .ha-item a { color: var(--accent); }
+  #log { font-size: 0.78rem; color: var(--muted); white-space: pre-wrap; max-height: 140px; overflow-y: auto; }
+  .muted { color: var(--muted); font-size: 0.85rem; }
+  details > summary { cursor: pointer; font-size: 0.85rem; color: var(--accent); margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Backlink Builder — Control Panel</h1>
+<div class="subtitle">Talks directly to your GitHub repo's API from this browser. Nothing is stored anywhere except your browser's local storage.</div>
+
+<div class="card" id="setup-card">
+  <h2>Connection</h2>
+  <div class="row">
+    <div><label>GitHub owner/org</label><input id="owner" placeholder="your-username"></div>
+    <div><label>Repository name</label><input id="repo" placeholder="backlink-builder"></div>
+    <div><label>Branch</label><input id="branch" placeholder="main" value="main"></div>
+  </div>
+  <label>Personal access token (fine-grained, scoped to this repo only — Contents: read/write, Actions: read/write)</label>
+  <input id="token" type="password" placeholder="github_pat_...">
+  <button onclick="saveConnection()">Save & Load</button>
+  <button class="secondary" onclick="clearConnection()">Sign out / clear token</button>
+  <div class="muted" style="margin-top:8px;">
+    Create a token at github.com → Settings → Developer settings → Personal access tokens → Fine-grained tokens.
+    Restrict it to this one repository.
+  </div>
+</div>
+
+<div id="sites-container"></div>
+
+<div class="card">
+  <h2>Add a site</h2>
+  <div class="row">
+    <div><label>Website URL</label><input id="new-url" placeholder="https://example.com"></div>
+    <div><label>Slug (id, lowercase-with-dashes)</label><input id="new-slug" placeholder="example-com"></div>
+  </div>
+  <label>Priority keywords (comma-separated, optional — everything else is auto-detected from the site)</label>
+  <input id="new-keywords" placeholder="professional hypnotherapist in london, hypnotherapy service">
+  <div class="row">
+    <div><label>Contact name</label><input id="new-contact-name"></div>
+    <div><label>Contact email (Reply-To on outreach)</label><input id="new-contact-email"></div>
+  </div>
+  <button onclick="addSite()">Create site config</button>
+</div>
+
+<div class="card">
+  <h2>Activity log</h2>
+  <div id="log">Nothing yet.</div>
+</div>
+
+<script>
+const LS_KEY = "backlink_dashboard_conn";
+
+function log(msg) {
+  const el = document.getElementById("log");
+  const t = new Date().toLocaleTimeString();
+  el.textContent = `[${t}] ${msg}\n` + el.textContent;
+}
+
+function conn() {
+  return {
+    owner: document.getElementById("owner").value.trim(),
+    repo: document.getElementById("repo").value.trim(),
+    branch: document.getElementById("branch").value.trim() || "main",
+    token: document.getElementById("token").value.trim(),
+  };
+}
+
+function saveConnection() {
+  localStorage.setItem(LS_KEY, JSON.stringify(conn()));
+  log("Connection saved locally.");
+  loadDashboard();
+}
+
+function clearConnection() {
+  localStorage.removeItem(LS_KEY);
+  document.getElementById("token").value = "";
+  log("Token cleared from this browser.");
+}
+
+function restoreConnection() {
+  const raw = localStorage.getItem(LS_KEY);
+  if (!raw) return;
+  const c = JSON.parse(raw);
+  document.getElementById("owner").value = c.owner || "";
+  document.getElementById("repo").value = c.repo || "";
+  document.getElementById("branch").value = c.branch || "main";
+  document.getElementById("token").value = c.token || "";
+}
+
+// ---- base64 helpers (UTF-8 safe) ----
+function b64encode(str) {
+  return btoa(unescape(encodeURIComponent(str)));
+}
+function b64decode(b64) {
+  return decodeURIComponent(escape(atob(b64.replace(/\n/g, ""))));
+}
+
+// ---- GitHub API ----
+async function ghApi(path, options = {}) {
+  const c = conn();
+  const res = await fetch(`https://api.github.com${path}`, {
+    ...options,
+    headers: {
+      "Authorization": `Bearer ${c.token}`,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(options.headers || {}),
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`GitHub API ${res.status}: ${body.slice(0, 300)}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+async function ghGetFile(path) {
+  const c = conn();
+  try {
+    const data = await ghApi(`/repos/${c.owner}/${c.repo}/contents/${path}?ref=${c.branch}`);
+    return { content: b64decode(data.content), sha: data.sha };
+  } catch (e) {
+    if (e.message.includes("404")) return null;
+    throw e;
+  }
+}
+
+async function ghPutFile(path, content, message, sha) {
+  const c = conn();
+  const body = {
+    message,
+    content: b64encode(content),
+    branch: c.branch,
+  };
+  if (sha) body.sha = sha;
+  return ghApi(`/repos/${c.owner}/${c.repo}/contents/${path}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+async function ghTriggerRun() {
+  const c = conn();
+  await ghApi(`/repos/${c.owner}/${c.repo}/actions/workflows/backlinks.yml/dispatches`, {
+    method: "POST",
+    body: JSON.stringify({ ref: c.branch }),
+  });
+  log("Triggered a manual run. Check the Actions tab in a minute or two.");
+}
+
+// ---- Dashboard rendering ----
+async function loadDashboard() {
+  const container = document.getElementById("sites-container");
+  container.innerHTML = `<div class="card muted">Loading state/dashboard.json...</div>`;
+  try {
+    const file = await ghGetFile("state/dashboard.json");
+    if (!file) {
+      container.innerHTML = `<div class="card muted">No state/dashboard.json yet — it's created after the first scheduled (or manually triggered) run.</div>`;
+      return;
+    }
+    const data = JSON.parse(file.content);
+    container.innerHTML = "";
+    for (const site of data.sites) {
+      container.appendChild(renderSiteCard(site));
+    }
+    log(`Loaded dashboard (generated ${data.generated_at}).`);
+  } catch (e) {
+    container.innerHTML = `<div class="card muted">Failed to load: ${e.message}</div>`;
+    log("Error: " + e.message);
+  }
+}
+
+function renderSiteCard(site) {
+  const card = document.createElement("div");
+  card.className = "card site-card";
+  const s = site.stats || {};
+  card.innerHTML = `
+    <h2>${site.name || site.id} <span class="chip">${site.id}</span></h2>
+    <div class="muted"><a href="${site.url}" target="_blank">${site.url}</a> — last run ${site.last_run_at || "never"}</div>
+    <div class="stats">
+      <div class="stat"><b>${s.leads_total ?? 0}</b>leads found</div>
+      <div class="stat"><b>${s.drafted_pending ?? 0}</b>awaiting approval</div>
+      <div class="stat"><b>${s.approved_pending ?? 0}</b>approved, queued to send</div>
+      <div class="stat"><b>${s.sent_total ?? 0}</b>sent</div>
+    </div>
+    <button onclick="toggleDrafts('${site.id}', this)">View drafts</button>
+    <button class="secondary" onclick="ghTriggerRun()">Run now</button>
+    <div class="drafts-slot"></div>
+    <details>
+      <summary>High-authority profiles still needing signup (${(site.high_authority_pending||[]).length})</summary>
+      <div class="ha-list">
+        ${(site.high_authority_pending || []).map(t => `
+          <div class="ha-item">
+            <input type="checkbox" onchange="markHaDone('${site.id}', '${t.id}', this)">
+            <a href="${t.signup_url}" target="_blank">${t.name}</a>
+          </div>`).join("") || '<div class="muted">None pending.</div>'}
+      </div>
+    </details>
+  `;
+  return card;
+}
+
+async function toggleDrafts(siteId, btn) {
+  const slot = btn.parentElement.querySelector(".drafts-slot");
+  if (slot.dataset.open === "1") {
+    slot.innerHTML = "";
+    slot.dataset.open = "0";
+    btn.textContent = "View drafts";
+    return;
+  }
+  slot.innerHTML = `<div class="muted">Loading...</div>`;
+  try {
+    const file = await ghGetFile(`state/sites/${siteId}/leads.json`);
+    const leads = file ? JSON.parse(file.content) : {};
+    const entries = Object.entries(leads).filter(([id, l]) => ["drafted", "approved", "no_contact_found"].includes(l.status));
+    if (entries.length === 0) {
+      slot.innerHTML = `<div class="muted">No drafts right now.</div>`;
+    } else {
+      slot.innerHTML = entries.map(([id, l]) => renderLead(siteId, id, l)).join("");
+    }
+    slot.dataset.open = "1";
+    btn.textContent = "Hide drafts";
+  } catch (e) {
+    slot.innerHTML = `<div class="muted">Failed to load: ${e.message}</div>`;
+  }
+}
+
+function renderLead(siteId, leadId, lead) {
+  const badge = `<span class="status-badge status-${lead.status}">${lead.status}</span>`;
+  if (lead.status === "no_contact_found") {
+    return `<div class="lead">
+      <div class="url">${lead.url}</div>
+      <div class="meta">${badge} — no public contact email found; consider reaching out manually via their contact form.</div>
+    </div>`;
+  }
+  const disabled = lead.status !== "drafted" ? "disabled" : "";
+  return `<div class="lead">
+    <div class="url">${lead.url}</div>
+    <div class="subject">${lead.draft_subject || ""}</div>
+    <div class="body">${(lead.draft_body || "").replace(/</g, "&lt;")}</div>
+    <div class="meta">${badge} — to: ${lead.contact_email || "?"}</div>
+    <button ${disabled} onclick="decideLead('${siteId}', '${leadId}', 'approved', this)">Approve</button>
+    <button class="reject" ${disabled} onclick="decideLead('${siteId}', '${leadId}', 'rejected', this)">Reject</button>
+  </div>`;
+}
+
+async function decideLead(siteId, leadId, decision, btn) {
+  btn.parentElement.querySelectorAll("button").forEach(b => b.disabled = true);
+  try {
+    const path = `state/sites/${siteId}/leads.json`;
+    const file = await ghGetFile(path);
+    const leads = JSON.parse(file.content);
+    if (!leads[leadId]) throw new Error("Lead no longer exists (state changed elsewhere).");
+    leads[leadId].status = decision;
+    leads[leadId][`${decision}_at`] = new Date().toISOString();
+    await ghPutFile(path, JSON.stringify(leads, null, 2), `Dashboard: ${decision} lead ${leadId} for ${siteId}`, file.sha);
+    log(`Marked ${leadId} as ${decision} for ${siteId}. It'll send on the next scheduled run (subject to pacing).`);
+    btn.closest(".lead").querySelector(".status-badge").outerHTML = `<span class="status-badge status-${decision}">${decision}</span>`;
+  } catch (e) {
+    log("Error: " + e.message);
+    btn.parentElement.querySelectorAll("button").forEach(b => b.disabled = false);
+  }
+}
+
+async function markHaDone(siteId, targetId, checkbox) {
+  checkbox.disabled = true;
+  try {
+    const path = `state/sites/${siteId}/high_authority_status.json`;
+    const file = await ghGetFile(path);
+    const status = file ? JSON.parse(file.content) : {};
+    status[targetId] = { done: checkbox.checked, done_at: new Date().toISOString() };
+    await ghPutFile(path, JSON.stringify(status, null, 2), `Dashboard: mark ${targetId} done for ${siteId}`, file ? file.sha : undefined);
+    log(`Marked ${targetId} as done for ${siteId}.`);
+  } catch (e) {
+    log("Error: " + e.message);
+    checkbox.checked = !checkbox.checked;
+    checkbox.disabled = false;
+  }
+}
+
+async function addSite() {
+  const url = document.getElementById("new-url").value.trim();
+  let slug = document.getElementById("new-slug").value.trim();
+  const keywordsRaw = document.getElementById("new-keywords").value.trim();
+  const contactName = document.getElementById("new-contact-name").value.trim();
+  const contactEmail = document.getElementById("new-contact-email").value.trim();
+
+  if (!url) { log("Error: URL is required."); return; }
+  if (!slug) slug = url.replace(/^https?:\/\//, "").replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase();
+
+  const keywords = keywordsRaw ? keywordsRaw.split(",").map(k => k.trim()).filter(Boolean) : [];
+  const yamlLines = [`url: "${url}"`, ""];
+  if (keywords.length) {
+    yamlLines.push("priority_keywords:");
+    keywords.forEach(k => yamlLines.push(`  - "${k.replace(/"/g, '\\"')}"`));
+    yamlLines.push("");
+  }
+  yamlLines.push("contact:");
+  yamlLines.push(`  name: "${contactName.replace(/"/g, '\\"')}"`);
+  yamlLines.push(`  email: "${contactEmail.replace(/"/g, '\\"')}"`);
+  yamlLines.push(`  reply_to: "${contactEmail.replace(/"/g, '\\"')}"`);
+  const yaml = yamlLines.join("\n") + "\n";
+
+  try {
+    await ghPutFile(`config/sites/${slug}.yaml`, yaml, `Dashboard: add site ${slug}`);
+    log(`Created config/sites/${slug}.yaml. It'll be picked up on the next run (or hit "Run now" above once a site card exists).`);
+    document.getElementById("new-url").value = "";
+    document.getElementById("new-slug").value = "";
+    document.getElementById("new-keywords").value = "";
+    document.getElementById("new-contact-name").value = "";
+    document.getElementById("new-contact-email").value = "";
+  } catch (e) {
+    log("Error creating site: " + e.message);
+  }
+}
+
+restoreConnection();
+if (conn().owner && conn().repo && conn().token) loadDashboard();
+</script>
+</body>
+</html>
