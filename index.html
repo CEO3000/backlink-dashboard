@@ -491,7 +491,7 @@ function demoData(now) {
     return Object.assign({ updated_at: iso, name: name, url: url, settings: { articles_per_day: target, mode: "live", enabled: true }, target_per_day: target,
       verified_today: verified, published_today: verified, verified_live_total: hist_.reduce(function (a, h) { return a + h.verified; }, 0), pending_approval: 0,
       topics_unused: 9, by_status: {}, failures_today: {}, history: hist_, errors: [], blocked: [], notes: [],
-      live_links: [{ url: "https://dev.to/example/post-1", title: "A practical guide", anchor: "request a book", follow: true, verified_at: iso }] }, extra || {});
+      live_links: [{ url: "https://dev.to/example/post-1", title: "A practical guide", anchor: "request a book", follow: true, verified_at: iso, platform: "DEV.to", target: url }] }, extra || {});
   }
   var bp = {
     "genbooks-uk": site("Genbooks", "https://genbooks.uk/", 2, 2, hist([0, 0, 0, 1, 1, 2, 2, 1, 2, 2, 2, 2, 2, 2])),
@@ -778,7 +778,7 @@ function errorFold(s, st) {
 function linksFold(s) {
   var links = (s.entry && s.entry.live_links) || [];
   return '<details class="fold"><summary>' + icon("ext") + " Live backlinks <span class=\"chip info\">" + links.length + '</span><span class="chev">' + icon("chev") + '</span></summary><div class="fold-body">' +
-    (links.length ? links.slice().reverse().slice(0, 30).map(function (l) { return '<div class="link-row"><a href="' + esc(safeUrl(l.url)) + '" target="_blank" rel="noopener noreferrer">' + esc(l.title || l.url) + '</a><span class="muted">link text “' + esc(l.anchor || "") + "” · " + (l.follow ? "followed" : "nofollow") + (l.verified_at ? " · verified " + esc(timeAgo(l.verified_at)) : "") + "</span></div>"; }).join("") : '<div class="empty">No verified links yet.</div>') + "</div></details>";
+    (links.length ? links.slice().reverse().slice(0, 30).map(function (l) { return '<div class="link-row"><a href="' + esc(safeUrl(l.url)) + '" target="_blank" rel="noopener noreferrer">' + esc(l.title || l.url) + '</a><span class="muted">' + (l.platform ? "Published on " + esc(l.platform) + " · " : "") + (l.target ? 'links to <a href="' + esc(safeUrl(l.target)) + '" target="_blank" rel="noopener noreferrer">' + esc(String(l.target).replace(/^https?:\/\/(www\.)?/, "")) + "</a> · " : "") + 'link text “' + esc(l.anchor || "") + "” · " + (l.follow ? "followed" : "nofollow") + (l.verified_at ? " · verified " + esc(timeAgo(l.verified_at)) : "") + "</span></div>"; }).join("") : '<div class="empty">No verified links yet.</div>') + "</div></details>";
 }
 
 /* ---------- Add a website ---------- */
