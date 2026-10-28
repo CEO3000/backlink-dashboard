@@ -656,7 +656,7 @@ function renderAlerts() {
   if (hiddenBy.length) {
     var nHidden = hiddenBy.reduce(function (a, s) { return a + s.entry.blocked_from_google; }, 0), nLive = siteList().reduce(function (a, s) { return a + ((s.entry && s.entry.verified_live_total) || 0); }, 0);
     items.push({ kind: "warn", title: nHidden + " of " + nLive + " live backlinks are hidden from Google",
-      body: "The links are live, but the platform tells Google not to index these pages and not to follow their links (noindex and nofollow, which DEV.to applies to new accounts with no track record). Until that is lifted they do not help ranking.",
+      body: "The links are live, but the platform tells Google not to index these pages and not to follow their links (noindex and nofollow, which platforms such as DEV.to apply to new accounts with no track record). Until that is lifted they do not help ranking.",
       list: hiddenBy.map(function (s) { return s.name + ": " + s.entry.blocked_from_google + " of " + (s.entry.verified_live_total || 0) + " hidden"; }) });
   }
   var gem = estimateGemini(Object.fromEntries(siteList().map(function (s) { return [s.id, effective(s)]; })));
