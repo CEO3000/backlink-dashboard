@@ -56,6 +56,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .muted { color: var(--muted); }
 .why { margin: 0 0 12px; padding-left: 18px; font-size: .84rem; color: var(--ink-2); display: grid; gap: 3px; }
+.qhead { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; justify-content: space-between; margin-bottom: 14px; }
+.qcard { padding: 16px 18px; display: grid; gap: 12px; }
+.qtitle { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.qtitle a { font-weight: 650; }
+.qprep { border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 10px; }
+.qtext { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-3); border-radius: 8px; padding: 10px 12px; font-size: .84rem; max-height: 240px; overflow: auto; margin-top: 4px; }
+.qrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.qrow .input { flex: 1; min-width: 220px; }
 .num { font-variant-numeric: tabular-nums; }
 svg.icon { width: 1em; height: 1em; flex: none; vertical-align: -0.125em; }
 
@@ -221,6 +229,7 @@ details.fold > .fold-body { padding: 0 20px 16px; }
   <section id="overview" aria-labelledby="h-overview"></section>
   <section id="chart-section" aria-labelledby="h-chart"></section>
   <section id="sites-section" aria-labelledby="h-sites"></section>
+  <section id="queue-section" aria-labelledby="h-queue"></section>
   <section id="add-section" aria-labelledby="h-add"></section>
   <section id="runs-section" aria-labelledby="h-runs"></section>
   <section id="legacy-section" aria-labelledby="h-legacy"></section>
@@ -485,6 +494,42 @@ function axisTicks(max) {
   return out;
 }
 
+/** The submit queue: every listed opportunity (never an excluded one) with what the owner has done about it, most useful first. */
+function buildQueue(files, statuses) {
+  var items = [];
+  Object.keys(files || {}).forEach(function (siteId) {
+    var data = files[siteId] || {};
+    Object.keys(data).forEach(function (k) {
+      var e = data[k]; if (!e || e.excluded) return;
+      var st = (statuses || {})[e.id] || {};
+      items.push(Object.assign({}, e, { siteId: siteId, status: st.status || "todo", published_url: st.published_url || "", status_at: st.at || "" }));
+    });
+  });
+  var rank = { todo: 0, submitted: 1, published: 2, skipped: 3 };
+  return items.sort(function (a, b) {
+    return (rank[a.status] - rank[b.status]) || ((b.prepared ? 1 : 0) - (a.prepared ? 1 : 0)) || ((b.fit || 0) - (a.fit || 0)) || String(a.domain).localeCompare(String(b.domain));
+  });
+}
+function queueCounts(items, site) {
+  var c = { todo: 0, submitted: 0, published: 0, skipped: 0 };
+  (items || []).forEach(function (i) { if (site === "all" || i.siteId === site) c[i.status] = (c[i.status] || 0) + 1; });
+  return c;
+}
+function queueView(items, site, status) {
+  return (items || []).filter(function (i) { return (site === "all" || i.siteId === site) && i.status === status; });
+}
+/** The owner's record (state/assist_status.json) after one change. "todo" forgets the entry; "published" needs the full https address. */
+function mergeAssistStatus(doc, id, change, now) {
+  var out = Object.assign({}, doc || {});
+  if (!/^[0-9a-f]{8,32}$/.test(String(id))) throw new Error("Unknown opportunity.");
+  if (change.status === "todo") { delete out[id]; return out; }
+  if (["submitted", "skipped", "published"].indexOf(change.status) < 0) throw new Error("Unknown status.");
+  var url = String(change.published_url || (out[id] && out[id].published_url) || "").trim();
+  if (change.status === "published" && !/^https:\/\/[^\s\/]+\.[^\s]+$/i.test(url)) throw new Error("Paste the full address of the published page, starting with https://");
+  out[id] = { status: change.status, published_url: url, at: (now || new Date()).toISOString() };
+  return out;
+}
+
 /** Sample data for ?demo=1 so the design can be previewed without a token. */
 function demoData(now) {
   now = now || new Date();
@@ -505,9 +550,27 @@ function demoData(now) {
       errors: [{ at: iso, title: "Meeting people through local activities", status: "RETRY_REQUIRED", category: "quota", message: "Gemini quota exhausted (HTTP 429): GenerateRequestsPerDayPerProjectPerModel-FreeTier (limit 20)" }],
       notes: ["Stopping for today: Gemini is unavailable, so no further article can be written."] })
   };
+  function opp(id, domain, title, kind, label, how, fit, fitLabel, prepared, extra) {
+    return Object.assign({ id: id, domain: domain, page_url: "https://" + domain + "/write-for-us", page_title: title, kind: kind, kind_label: label, how: how, fit: fit, fit_label: fitLabel,
+      prepared: prepared, attempts: 0, excluded: null, from_name: "Genbooks team", from_email: "hello@genbooks.uk", website: "https://genbooks.uk" },
+      prepared ? { title: "Write for One Reader: How to Define Who Your Book Is For", description: "A practical way to stop writing for everyone: describe one reader and test each chapter against them.",
+        body_markdown: "Many first drafts begin with a quiet promise...\n\n## Describe one person in detail\n\nStart with a short portrait, not a market category.", word_count: 640,
+        anchor: "saying who a book is for", target_url: "https://genbooks.uk/",
+        note: "Hello,\n\nI would like to offer an article for " + title + ": \"Write for One Reader\". It is a practical guide for authors whose books try to speak to everyone, about 640 words, written for this submission and not published elsewhere. I am happy to change the length, tone or angle to suit your readers.\n\nThank you,\nGenbooks team\nhttps://genbooks.uk" } : {}, extra || {});
+  }
+  var qfiles = { "genbooks-uk": {
+    a1: opp("a1a1a1a1a1a1a1a1", "bookwritingtips.com", "Book Writing Tips: Write for Us", "captcha_required", "CAPTCHA", "Paste the text, solve the CAPTCHA yourself and press Send.", 90, "Good fit", true),
+    a2: opp("a2a2a2a2a2a2a2a2", "authorsguild.org", "Resource Library - The Authors Guild", "email_only", "Email", "Send it from your own email: this system never emails on your behalf.", 30, "Possible fit", true),
+    a3: opp("a3a3a3a3a3a3a3a3", "selfpubhub.example.org", "Self-publishing Hub: Contribute", "form_submission", "Form", "Paste the text into the form and press Send.", 60, "Good fit", false),
+    a4: opp("a4a4a4a4a4a4a4a4", "alistapart.com", "Write for Us - A List Apart", "form_submission", "Form", "Paste the text into the form and press Send.", 0, "Unclear fit", false),
+    a5: opp("a5a5a5a5a5a5a5a5", "writersweekly.example.com", "Writers Weekly: Guest Articles", "captcha_required", "CAPTCHA", "Paste the text, solve the CAPTCHA yourself and press Send.", 60, "Good fit", true,
+      { published: { url: "https://writersweekly.example.com/guest/one-reader", outcome: "verified", follow: true, indexable: true, counts_for_seo: true } })
+  } };
+  var qstatus = { a5a5a5a5a5a5a5a5: { status: "published", published_url: "https://writersweekly.example.com/guest/one-reader", at: iso } };
   return {
     dashboard: { generated_at: iso, sites: [], backlink_publishing: bp, publishing_issues: [] },
     settings: { sites: { "genbooks-uk": { articles_per_day: 2, mode: "live", enabled: true }, "hypnotreatment-uk": { articles_per_day: 2, mode: "live", enabled: true }, "social-field": { articles_per_day: 2, mode: "live", enabled: true } } },
+    queue: { files: qfiles, statuses: qstatus },
     runs: [
       { id: 3, run_number: 211, status: "completed", conclusion: "success", event: "workflow_dispatch", created_at: iso, updated_at: iso, html_url: "https://github.com/", run_started_at: new Date(now.getTime() - 5 * 60000).toISOString() },
       { id: 2, run_number: 210, status: "completed", conclusion: "success", event: "workflow_dispatch", created_at: day(1) + "T09:13:00Z", updated_at: day(1) + "T09:19:00Z", html_url: "https://github.com/", run_started_at: day(1) + "T09:13:00Z" }
@@ -524,7 +587,8 @@ function demoData(now) {
 
 var LS_CONN = "backlink_dashboard_conn", LS_THEME = "backlink_dashboard_theme";
 var DEFAULTS = { owner: "CEO3000", repo: "backlink-builder", branch: "main" };
-var state = { data: null, settings: null, settingsSha: null, runs: [], edits: {}, demo: false, chartTable: false };
+var state = { data: null, settings: null, settingsSha: null, runs: [], edits: {}, demo: false, chartTable: false,
+  queue: { items: [], statuses: {}, site: "all", tab: "todo", shown: 12, loaded: false } };
 
 var $ = function (sel, root) { return (root || document).querySelector(sel); };
 var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
@@ -588,7 +652,8 @@ function toast(msg, kind) {
 
 /* ---------- Data ---------- */
 async function load() {
-  if (state.demo) { var d = demoData(); state.data = d.dashboard; state.settings = d.settings; state.settingsSha = "demo"; state.runs = d.runs; render(); return; }
+  if (state.demo) { var d = demoData(); state.data = d.dashboard; state.settings = d.settings; state.settingsSha = "demo"; state.runs = d.runs;
+    state.queue = Object.assign(state.queue, { items: buildQueue(d.queue.files, d.queue.statuses), statuses: d.queue.statuses, loaded: true }); render(); return; }
   var c = conn();
   if (!c.token) { render(); return; }
   setLoading();
@@ -603,6 +668,7 @@ async function load() {
   if (out[2].status === "rejected") problems.push("Could not load the run history: " + out[2].reason.message);
   state.loadProblems = problems; state.edits = {};
   render();
+  loadQueue().catch(function () { /* the queue is optional: the rest of the page is already shown */ });
 }
 function setLoading() { $("#overview").innerHTML = '<div class="card pad"><div class="skeleton" style="height:84px"></div></div>'; }
 
@@ -624,7 +690,7 @@ function render() {
   pill.className = "chip " + (state.demo ? "info" : "ok"); pill.innerHTML = icon(state.demo ? "info" : "check") + esc(state.demo ? "Demo data" : c.owner + "/" + c.repo);
   $("#btn-run").disabled = !connected || state.demo;
   if (!connected) { renderWelcome(); return; }
-  renderAlerts(); renderOverview(); renderChart(); renderSites(); renderRuns(); renderLegacy();
+  renderAlerts(); renderOverview(); renderChart(); renderSites(); renderQueue(); renderRuns(); renderLegacy();
   if (!$("#add-form")) renderAdd();      // built once, so what the owner has typed is never wiped by a re-render
 }
 
@@ -884,6 +950,90 @@ async function saveSettings(siteId, changes) {
   }
 }
 
+/* ---------- Submit queue ---------- */
+var STATUS_LABEL = { todo: "To do", submitted: "Submitted", published: "Published", skipped: "Skipped" };
+function siteName(id) { var s = siteList().filter(function (x) { return x.id === id; })[0]; return s ? s.name : id; }
+function qItem(id) { return state.queue.items.filter(function (x) { return x.id === id; })[0]; }
+
+async function loadQueue() {
+  var files = {}, jobs = siteList().filter(function (s) { return s.entry && s.entry.assist && s.entry.assist.file; }).map(function (s) {
+    return ghGetFile(s.entry.assist.file).then(function (f) { if (f) files[s.id] = JSON.parse(f.content); }).catch(function () { /* one site's file missing: the others still show */ });
+  });
+  var statuses = {};
+  var got = await Promise.allSettled([Promise.all(jobs), ghGetFile("state/assist_status.json")]);
+  if (got[1].status === "fulfilled" && got[1].value) { try { statuses = JSON.parse(got[1].value.content); } catch (e) { statuses = {}; } }
+  state.queue.items = buildQueue(files, statuses); state.queue.statuses = statuses; state.queue.loaded = true;
+  renderQueue();
+}
+
+function qField(label, text, part, i) {
+  return '<div><div class="qrow" style="justify-content:space-between"><b style="font-size:.82rem">' + esc(label) + '</b><button class="btn quiet small" data-action="q-copy" data-q="' + esc(i.id) + '" data-part="' + part + '">' + icon("copy") + "Copy</button></div>" +
+    '<div class="qtext">' + esc(text) + "</div></div>";
+}
+function qResult(i) {
+  var p = i.published || {};
+  return '<div class="qrow"><a href="' + esc(safeUrl(i.published_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.published_url) + "</a>" +
+    (p.outcome === "verified" ? (p.counts_for_seo ? chip("ok", "Link found, Google can count it") : chip("warn", "Link found, but hidden from Google")) :
+      p.outcome ? chip("warn", "Link not found on that page yet") : '<span class="muted">It is checked at the next daily run.</span>') + "</div>";
+}
+function qCard(i) {
+  var id = esc(i.id);
+  var fitLevel = i.fit_label === "Good fit" ? "ok" : i.fit_label === "Possible fit" ? "new" : "warn";
+  var prep = i.prepared ? '<div class="qprep">' +
+    qField("Your details", [i.from_name, i.from_email, i.website].filter(Boolean).join("\n"), "details", i) +
+    qField("Short message (for the form's message box)", i.note, "note", i) +
+    qField("Title", i.title, "title", i) + qField("Description", i.description, "description", i) +
+    '<details class="fold"><summary>' + icon("chev") + " Article (" + esc(i.word_count || "") + " words, markdown)</summary><div class=\"fold-body\">" + qField("Article", i.body_markdown, "article", i) + "</div></details></div>"
+    : '<div class="qprep"><span class="muted">The article is not ready yet. The machine prepares the best fits first, a few a day, using the free Gemini allowance left after the real publishing.</span></div>';
+  var buttons = '<div class="qrow"><a class="btn secondary small" href="' + esc(safeUrl(i.page_url)) + '" target="_blank" rel="noopener noreferrer">' + icon("ext") + "Open the submission page</a>" +
+    (i.status === "todo" ? '<button class="btn small" data-action="q-status" data-q="' + id + '" data-status="submitted">Mark submitted</button><button class="btn quiet small" data-action="q-status" data-q="' + id + '" data-status="skipped">Skip</button>'
+      : '<button class="btn quiet small" data-action="q-status" data-q="' + id + '" data-status="todo">Move back to To do</button>') + "</div>";
+  var publish = (i.status === "todo" || i.status === "submitted") ? '<div class="qrow"><label class="visually-hidden" for="q-url-' + id + '">Published address</label><input class="input" type="url" id="q-url-' + id + '" placeholder="When it goes live, paste the published address here (https://...)">' +
+    '<button class="btn small" data-action="q-publish" data-q="' + id + '">Save as published</button></div>' : "";
+  return '<article class="card qcard" aria-label="' + esc(i.domain) + '"><div class="qtitle"><a href="' + esc(safeUrl(i.page_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.domain) + "</a>" +
+    '<span class="chip info">' + esc(i.kind_label) + "</span>" + chip(fitLevel, i.fit_label) + (i.status !== "todo" ? '<span class="chip">' + esc(STATUS_LABEL[i.status]) + "</span>" : "") +
+    '<span class="muted" style="margin-left:auto;font-size:.8rem">' + esc(siteName(i.siteId)) + "</span></div>" +
+    '<div class="muted" style="font-size:.85rem">' + esc(i.page_title) + " &middot; " + esc(i.how) + "</div>" +
+    (i.status === "published" ? qResult(i) : "") + prep + buttons + publish + "</article>";
+}
+function renderQueue() {
+  var q = state.queue, sec = $("#queue-section");
+  if (!q || !q.loaded || !q.items.length) { sec.innerHTML = ""; return; }
+  var counts = queueCounts(q.items, q.site), view = queueView(q.items, q.site, q.tab), shown = view.slice(0, q.shown);
+  var sites = siteList().filter(function (s) { return q.items.some(function (i) { return i.siteId === s.id; }); });
+  var tabs = ["todo", "submitted", "published", "skipped"].map(function (k) {
+    return '<button type="button" data-action="q-tab" data-status="' + k + '" aria-pressed="' + (q.tab === k) + '">' + STATUS_LABEL[k] + " (" + counts[k] + ")</button>";
+  }).join("");
+  sec.innerHTML = '<div class="qhead"><div><h2 id="h-queue">Submit queue</h2><p class="muted" style="max-width:64ch;margin-top:4px">Websites that take articles but need a person to submit them (a CAPTCHA, a form, an account or an email). ' +
+    "The machine found each one and prepared the text. You paste it, solve any CAPTCHA and press Send. The ones that fit best come first.</p></div>" +
+    '<div><label class="visually-hidden" for="q-site">Website</label><select class="input" id="q-site"><option value="all">All websites</option>' +
+    sites.map(function (s) { return '<option value="' + esc(s.id) + '"' + (q.site === s.id ? " selected" : "") + ">" + esc(s.name) + "</option>"; }).join("") + "</select></div></div>" +
+    '<div class="segmented" role="group" aria-label="Show" style="margin-bottom:14px;flex-wrap:wrap">' + tabs + "</div>" +
+    (shown.length ? '<div style="display:grid;gap:12px">' + shown.map(qCard).join("") + "</div>" : '<div class="card"><div class="empty">Nothing here yet.</div></div>') +
+    (view.length > shown.length ? '<div style="margin-top:14px;text-align:center"><button class="btn secondary" data-action="q-more">Show ' + Math.min(12, view.length - shown.length) + " more</button></div>" : "");
+}
+async function queueSet(id, change) {
+  try {
+    if (state.demo) { state.queue.statuses = mergeAssistStatus(state.queue.statuses, id, change); }
+    else {
+      for (var attempt = 0; attempt < 2; attempt++) {
+        var file = await ghGetFile("state/assist_status.json"), doc = file ? JSON.parse(file.content) : {};
+        var next = mergeAssistStatus(doc, id, change);
+        try { await ghPutFile("state/assist_status.json", JSON.stringify(next, null, 1) + "\n", "Dashboard: submit queue update", file ? file.sha : undefined); state.queue.statuses = next; break; }
+        catch (e) { if (attempt === 1 || (e.status !== 409 && e.status !== 422)) throw e; }
+      }
+    }
+    state.queue.items = buildQueue(groupBySite(state.queue.items), state.queue.statuses);
+    renderQueue(); toast(change.status === "todo" ? "Moved back to To do." : change.status === "skipped" ? "Skipped." : change.status === "submitted" ? "Marked as submitted." : "Saved. The link is checked at the next daily run.");
+  } catch (e) { toast(e.message || "Could not save.", "error"); }
+}
+/** buildQueue wants the per-site files, so rebuild them from the items already loaded (their own fields, without the owner's status). */
+function groupBySite(items) {
+  var files = {};
+  items.forEach(function (i) { var copy = Object.assign({}, i); (files[i.siteId] = files[i.siteId] || {})[i.id] = copy; });
+  return files;
+}
+
 /* ---------- Modal ---------- */
 function openModal(html) {
   var root = $("#modal-root");
@@ -909,6 +1059,16 @@ document.addEventListener("click", async function (ev) {
   if (a === "signout") { localStorage.removeItem(LS_CONN); closeModal(); state.data = null; state.settings = null; render(); return toast("Signed out. The token was removed from this browser."); }
   if (a === "copy") { try { await navigator.clipboard.writeText(t.dataset.copy); toast("Copied " + t.dataset.copy); } catch (e) { toast("Copy failed. Select the name and copy it by hand.", "error"); } return; }
   if (a === "toggle-table") { state.chartTable = !state.chartTable; return renderChart(); }
+  if (a === "q-tab") { state.queue.tab = t.dataset.status; state.queue.shown = 12; return renderQueue(); }
+  if (a === "q-more") { state.queue.shown += 12; return renderQueue(); }
+  if (a === "q-status") return queueSet(t.dataset.q, { status: t.dataset.status });
+  if (a === "q-publish") { var urlBox = document.getElementById("q-url-" + t.dataset.q); return queueSet(t.dataset.q, { status: "published", published_url: urlBox ? urlBox.value.trim() : "" }); }
+  if (a === "q-copy") {
+    var it = qItem(t.dataset.q), part = t.dataset.part; if (!it) return;
+    var text = part === "details" ? [it.from_name, it.from_email, it.website].filter(Boolean).join("\n") : part === "article" ? it.body_markdown : part === "note" ? it.note : part === "title" ? it.title : it.description;
+    try { await navigator.clipboard.writeText(text || ""); toast("Copied."); } catch (e) { toast("Copy failed. Select the text and copy it by hand.", "error"); }
+    return;
+  }
   if (a === "mode") { edit(id, { mode: t.dataset.mode }); return; }
   if (a === "reset") { delete state.edits[id]; return renderEdits(); }
   if (a === "clear-errors") { showErrors({}); return; }
@@ -919,7 +1079,9 @@ document.addEventListener("click", async function (ev) {
   }
 });
 document.addEventListener("change", function (ev) {
-  var t = ev.target; if (!t.dataset || !t.dataset.site) return;
+  var t = ev.target;
+  if (t.id === "q-site") { state.queue.site = t.value; state.queue.shown = 12; return renderQueue(); }
+  if (!t.dataset || !t.dataset.site) return;
   if (t.dataset.field === "articles_per_day") edit(t.dataset.site, { articles_per_day: Number(t.value) });
   if (t.dataset.field === "enabled") edit(t.dataset.site, { enabled: t.checked });
 });
