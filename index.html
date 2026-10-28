@@ -55,6 +55,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 .visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .muted { color: var(--muted); }
+.why { margin: 0 0 12px; padding-left: 18px; font-size: .84rem; color: var(--ink-2); display: grid; gap: 3px; }
 .num { font-variant-numeric: tabular-nums; }
 svg.icon { width: 1em; height: 1em; flex: none; vertical-align: -0.125em; }
 
@@ -433,6 +434,8 @@ function siteStatus(entry, settings, issues, now) {
     if (entry.topics_unused != null && entry.topics_unused < 2) { level = level === "ok" ? "warn" : level; reasons.push("Few topics left; new ones are requested automatically."); }
     (entry.notes || []).forEach(function (n) { if (level === "ok") level = "warn"; reasons.push(n); });
   }
+  var hidden = Number(entry.blocked_from_google) || 0;
+  if (hidden && level !== "error") { level = level === "ok" ? "warn" : level; reasons.push(hidden + " of " + (entry.verified_live_total || hidden) + " live links are marked noindex/nofollow by the platform, so Google does not count them yet."); }
   var ageHours = (now - new Date(entry.updated_at)) / 36e5;
   if (ageHours > 36 && level !== "error") { level = "warn"; reasons.push("No update for " + Math.round(ageHours) + " hours."); }
   return { level: level, label: { ok: "Healthy", warn: "Needs a look", error: "Error" }[level], reasons: reasons };
@@ -491,7 +494,9 @@ function demoData(now) {
     return Object.assign({ updated_at: iso, name: name, url: url, settings: { articles_per_day: target, mode: "live", enabled: true }, target_per_day: target,
       verified_today: verified, published_today: verified, verified_live_total: hist_.reduce(function (a, h) { return a + h.verified; }, 0), pending_approval: 0,
       topics_unused: 9, by_status: {}, failures_today: {}, history: hist_, errors: [], blocked: [], notes: [],
-      live_links: [{ url: "https://dev.to/example/post-1", title: "A practical guide", anchor: "request a book", follow: true, verified_at: iso, platform: "DEV.to", target: url }] }, extra || {});
+      live_links: [{ url: "https://dev.to/example/post-1", title: "A practical guide", anchor: "request a book", follow: true, verified_at: iso, platform: "DEV.to", target: url, indexable: true, counts_for_seo: true },
+        { url: "https://dev.to/example/post-2", title: "Another article", anchor: "write a book", follow: true, verified_at: iso, platform: "DEV.to", target: url, indexable: false, counts_for_seo: false }],
+      counted_by_google: 1, blocked_from_google: 1 }, extra || {});
   }
   var bp = {
     "genbooks-uk": site("Genbooks", "https://genbooks.uk/", 2, 2, hist([0, 0, 0, 1, 1, 2, 2, 1, 2, 2, 2, 2, 2, 2])),
@@ -647,6 +652,13 @@ function renderAlerts() {
   if (issues.length) items.push({ kind: "error", title: "A website was skipped because of a problem", list: issues.map(function (i) { return i.site_id + ": " + (i.problems || []).join("; "); }) });
   var errs = siteList().map(function (s) { var st = siteStatus(s.entry, effective(s), issuesFor(s.id), now); return st.level === "error" ? { s: s, st: st } : null; }).filter(Boolean);
   if (errs.length) items.push({ kind: "error", title: errs.length + (errs.length === 1 ? " website needs" : " websites need") + " attention", list: errs.map(function (e) { return e.s.name + ": " + e.st.reasons.slice(0, 2).join("; "); }) });
+  var hiddenBy = siteList().filter(function (s) { return s.entry && s.entry.blocked_from_google > 0; });
+  if (hiddenBy.length) {
+    var nHidden = hiddenBy.reduce(function (a, s) { return a + s.entry.blocked_from_google; }, 0), nLive = siteList().reduce(function (a, s) { return a + ((s.entry && s.entry.verified_live_total) || 0); }, 0);
+    items.push({ kind: "warn", title: nHidden + " of " + nLive + " live backlinks are hidden from Google",
+      body: "The links are live, but the platform tells Google not to index these pages and not to follow their links (noindex and nofollow, which DEV.to applies to new accounts with no track record). Until that is lifted they do not help ranking.",
+      list: hiddenBy.map(function (s) { return s.name + ": " + s.entry.blocked_from_google + " of " + (s.entry.verified_live_total || 0) + " hidden"; }) });
+  }
   var gem = estimateGemini(Object.fromEntries(siteList().map(function (s) { return [s.id, effective(s)]; })));
   if (gem.requests > gem.limit) items.push({ kind: "warn", title: "This plan may use more Gemini requests than the free limit", body: "About " + gem.requests + " requests a day are needed and the free allowance is about " + gem.limit + ". Some articles may wait until the next day." });
   $("#alerts").innerHTML = items.map(function (a) {
@@ -663,6 +675,7 @@ function renderOverview() {
   var done = todays.reduce(function (a, s) { return a + (s.entry.verified_today || 0); }, 0);
   var planned = active.reduce(function (a, s) { return a + (Number(effective(s).articles_per_day) || 0); }, 0);
   var live = sites.reduce(function (a, s) { return a + ((s.entry && s.entry.verified_live_total) || 0); }, 0);
+  var counted = sites.reduce(function (a, s) { return a + ((s.entry && s.entry.counted_by_google) || 0); }, 0);
   var gem = estimateGemini(Object.fromEntries(sites.map(function (s) { return [s.id, effective(s)]; })));
   var last = state.runs[0], pct = planned ? Math.min(100, Math.round(done / planned * 100)) : 0;
   var cls = gem.requests > gem.limit ? "crit" : gem.requests > gem.limit * .75 ? "warn" : "";
@@ -672,7 +685,7 @@ function renderOverview() {
     '<div class="meter ' + (pct >= 100 ? "good" : "") + '" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '" aria-label="Share of today’s plan completed"><span style="width:' + pct + '%"></span></div>' +
     '<p class="hint">Counts only links found on the live page. The daily run starts at 09:13 UTC (' + esc(localTime(9, 13)) + " your time).</p></div>" +
     '<div class="grid grid-stats">' +
-    stat("Live backlinks in total", live, "found on the live pages") +
+    stat("Live backlinks in total", live, sites.some(function (x) { return x.entry && x.entry.counted_by_google != null; }) ? counted + " count for Google" : "found on the live pages") +
     stat("Websites", active.length + (sites.length - active.length ? " + " + (sites.length - active.length) + " paused" : ""), sites.length + " added") +
     stat("Last run", last ? (last.status === "completed" ? (last.conclusion === "success" ? "Succeeded" : "Failed") : "Running") : "–", last ? timeAgo(last.updated_at, now) : "no runs yet") +
     '<div class="card stat"><div class="label">Gemini use (estimate)</div><div class="value num">~' + gem.requests + '<span class="muted" style="font-size:.9rem;font-weight:500"> / ' + gem.limit + '</span></div><div class="meter ' + cls + '" style="margin-top:8px"><span style="width:' + Math.min(100, Math.round(gem.requests / gem.limit * 100)) + '%"></span></div><div class="sub">requests a day, free limit</div></div>' +
@@ -749,6 +762,7 @@ function siteCard(s, ids, now) {
     '<div class="site-head"><div style="flex:1;min-width:200px"><div class="site-title" id="t-' + esc(s.id) + '"><span class="swatch" style="background:' + seriesSlot(ids, s.id) + '"></span>' + esc(s.name) + "</div>" +
     (s.url ? '<div class="site-url"><a href="' + esc(safeUrl(s.url)) + '" target="_blank" rel="noopener noreferrer">' + esc(s.url.replace(/^https?:\/\//, "")) + "</a></div>" : "") + "</div>" + chip(st.level, st.label) + "</div>" +
     '<div class="site-body">' +
+    ((st.level === "warn" || st.level === "error") && st.reasons.length ? '<ul class="why" aria-label="Why this website needs a look">' + st.reasons.slice(0, 3).map(function (r) { return "<li>" + esc(r) + "</li>"; }).join("") + "</ul>" : "") +
     (e ? '<div class="site-progress"><div class="row"><span><b class="num">' + done + " of " + target + '</b> verified today</span><span class="muted">' + (today ? "updated " + timeAgo(e.updated_at, now) : "waiting for today’s run") + '</span></div><div class="meter ' + (pct >= 100 ? "good" : "") + '" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '" aria-label="Progress today"><span style="width:' + pct + '%"></span></div></div>' +
       '<div class="mini-stats">' + mini(e.verified_live_total, "live in total") + mini(e.topics_unused, "topics ready") + mini(e.pending_approval || 0, "waiting approval") + mini((e.errors || []).length + (e.blocked || []).length, "open errors") + "</div>"
       : '<p class="muted" style="margin-bottom:14px">No results yet. ' + esc(st.reasons[0] || "") + "</p>") + "</div>" +
@@ -778,7 +792,8 @@ function errorFold(s, st) {
 function linksFold(s) {
   var links = (s.entry && s.entry.live_links) || [];
   return '<details class="fold"><summary>' + icon("ext") + " Live backlinks <span class=\"chip info\">" + links.length + '</span><span class="chev">' + icon("chev") + '</span></summary><div class="fold-body">' +
-    (links.length ? links.slice().reverse().slice(0, 30).map(function (l) { return '<div class="link-row"><a href="' + esc(safeUrl(l.url)) + '" target="_blank" rel="noopener noreferrer">' + esc(l.title || l.url) + '</a><span class="muted">' + (l.platform ? "Published on " + esc(l.platform) + " · " : "") + (l.target ? 'links to <a href="' + esc(safeUrl(l.target)) + '" target="_blank" rel="noopener noreferrer">' + esc(String(l.target).replace(/^https?:\/\/(www\.)?/, "")) + "</a> · " : "") + 'link text “' + esc(l.anchor || "") + "” · " + (l.follow ? "followed" : "nofollow") + (l.verified_at ? " · verified " + esc(timeAgo(l.verified_at)) : "") + "</span></div>"; }).join("") : '<div class="empty">No verified links yet.</div>') + "</div></details>";
+    (links.length ? links.slice().reverse().slice(0, 30).map(function (l) { return '<div class="link-row"><a href="' + esc(safeUrl(l.url)) + '" target="_blank" rel="noopener noreferrer">' + esc(l.title || l.url) + '</a><span class="muted">' + (l.platform ? "Published on " + esc(l.platform) + " · " : "") + (l.target ? 'links to <a href="' + esc(safeUrl(l.target)) + '" target="_blank" rel="noopener noreferrer">' + esc(String(l.target).replace(/^https?:\/\/(www\.)?/, "")) + "</a> · " : "") + 'link text “' + esc(l.anchor || "") + "” · " + (l.follow ? "followed" : "nofollow") + (l.verified_at ? " · verified " + esc(timeAgo(l.verified_at)) : "") + "</span>" +
+      '<span>' + (l.counts_for_seo === true ? chip("ok", "Google can count it") : l.counts_for_seo === false ? chip("warn", l.indexable === false ? "Hidden from Google (noindex)" : "Hidden from Google (nofollow)") : chip("new", "Not checked yet")) + "</span></div>"; }).join("") : '<div class="empty">No verified links yet.</div>') + "</div></details>";
 }
 
 /* ---------- Add a website ---------- */
