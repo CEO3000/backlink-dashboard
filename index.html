@@ -936,6 +936,26 @@ function siteName(id) { var s = siteList().filter(function (x) { return x.id ===
 function guestList() {
   return guestItems(state.data && state.data.backlink_publishing).map(function (i) { return Object.assign(i, state.guest.local[i.id] || {}); });
 }
+/** The data the Click-to-submit link carries (it travels in the address after #bl=): used to show the text for copying by hand on a phone. */
+function guestPayload(link) {
+  try {
+    var b = String(link || "").split("#bl=")[1] || ""; if (!b) return null;
+    b = b.replace(/-/g, "+").replace(/_/g, "/"); while (b.length % 4) b += "=";
+    var p = JSON.parse(decodeURIComponent(escape(atob(b)))); return p && Array.isArray(p.fields) ? p : null;
+  } catch (e) { return null; }
+}
+var ROLE_LABEL = { first_name: "First name", last_name: "Last name", name: "Name", email: "Email", title: "Title", pitch: "Topics / pitch", article: "Article", bio: "About you / bio", links: "Links", website: "Website", company: "Company", category: "Category" };
+function gByHand(i) {
+  var p = guestPayload(i.link); if (!p) return "";
+  var boxes = p.fields.map(function (f, idx) {
+    if (f.kind === "checkbox") return "";
+    return '<div><div class="qrow" style="justify-content:space-between"><b style="font-size:.82rem">' + esc(ROLE_LABEL[f.role] || f.role) + '</b><button class="btn quiet small" data-action="g-copy" data-g="' + esc(i.id) + '" data-i="' + idx + '">' + icon("copy") + 'Copy</button></div><div class="qtext">' + esc(String(f.value)) + "</div></div>";
+  }).join("");
+  var ticks = p.fields.some(function (f) { return f.kind === "checkbox"; });
+  return '<details class="fold"><summary>' + icon("chev") + ' On a phone? Copy and paste by hand</summary><div class="fold-body" style="display:grid;gap:10px"><p class="hint">Open the website\u2019s form, paste each piece into the matching box, ' +
+    (ticks ? "tick the agreement box, " : "") + "answer any small question, solve the CAPTCHA yourself and press Send. Then tap I sent it.</p>" + boxes +
+    '<a class="btn secondary small" href="' + esc(safeUrl(i.form_url)) + '" target="_blank" rel="noopener noreferrer">' + icon("ext") + "Open the website\u2019s form</a></div></details>";
+}
 function gPublishBox(id) {
   return '<div class="qrow"><label class="visually-hidden" for="g-url-' + id + '">Published address</label><input class="input" type="url" id="g-url-' + id + '" placeholder="When it goes live, paste its address here (https://...)">' +
     '<button class="btn small" data-action="g-publish" data-g="' + id + '">Save as published</button></div>';
@@ -943,8 +963,8 @@ function gPublishBox(id) {
 function gCard(i) {
   var id = esc(i.id), action = "";
   if (i.status === "waiting" && i.link) action = '<div class="qrow"><a class="btn" href="' + esc(safeUrl(i.link)) + '" target="_blank" rel="noopener noreferrer">' + icon("ext") + 'Click to submit</a>' +
-    '<button class="btn quiet small" data-action="g-sent" data-g="' + id + '">I sent it</button></div><p class="hint">The page opens and fills itself. ' + (i.human_check ? "Answer the small question it asks, and tick any CAPTCHA: " : "Tick the CAPTCHA: ") + "it sends by itself as soon as you do (needs the Backlink helper extension in Chrome)." +
-    (i.form_kind === "pitch" ? " This is an application: the editors read the pitch and ask for the article if they like it." : "") + "</p>";
+    '<button class="btn quiet small" data-action="g-sent" data-g="' + id + '">I sent it</button></div><p class="hint">The page opens and fills itself. ' + (i.human_check ? "Answer the small question it asks, and tick any CAPTCHA: " : "Tick the CAPTCHA: ") + "it sends by itself as soon as you do (needs the Backlink helper extension in Chrome on a computer)." +
+    (i.form_kind === "pitch" ? " This is an application: the editors read the pitch and ask for the article if they like it." : "") + "</p>" + gByHand(i);
   else if (i.status === "sent") action = '<div class="muted">Sent ' + esc(i.sent_on || "") + (i.how ? " (" + esc(i.how) + ")" : "") + ". The editor decides; replies go to the website's email. The system checks the site's sitemap for the article.</div>" + gPublishBox(id);
   else if (i.status === "published") action = '<div class="qrow"><a href="' + esc(safeUrl(i.publication_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.publication_url || "") + "</a>" +
     (i.counts_for_seo === true ? chip("ok", "Google can count it") : i.counts_for_seo === false ? chip("warn", "Hidden from Google") : '<span class="muted">The link is checked at the next daily run.</span>') + "</div>";
@@ -1024,6 +1044,12 @@ document.addEventListener("click", async function (ev) {
   if (a === "g-tab") { state.guest.tab = t.dataset.status; state.guest.shown = 12; return renderGuests(); }
   if (a === "g-more") { state.guest.shown += 12; return renderGuests(); }
   if (a === "g-sent") return guestSet(t.dataset.g, { status: "sent" });
+  if (a === "g-copy") {
+    var gi = guestList().filter(function (x) { return x.id === t.dataset.g; })[0], gp = gi && guestPayload(gi.link), gf = gp && gp.fields[Number(t.dataset.i)];
+    if (!gf) return;
+    try { await navigator.clipboard.writeText(String(gf.value)); toast("Copied."); } catch (e) { toast("Copy failed. Select the text and copy it by hand.", "error"); }
+    return;
+  }
   if (a === "g-publish") { var urlBox = document.getElementById("g-url-" + t.dataset.g); return guestSet(t.dataset.g, { status: "published", published_url: urlBox ? urlBox.value.trim() : "" }); }
   if (a === "mode") { edit(id, { mode: t.dataset.mode }); return; }
   if (a === "reset") { delete state.edits[id]; return renderEdits(); }
