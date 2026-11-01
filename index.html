@@ -81,6 +81,7 @@ section { margin-top: 28px; }
 .pad { padding: 18px 20px; }
 .grid { display: grid; gap: 16px; }
 .grid-2 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); }
+.sites-grid { align-items: start; }   /* opening one card's fold must not stretch its neighbour */
 .grid-stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 
 /* ---------- Controls ---------- */
@@ -213,7 +214,6 @@ details.fold > .fold-body { padding: 0 20px 16px; }
   <section id="alerts" aria-live="polite" aria-label="Alerts"></section>
   <section id="overview" aria-labelledby="h-overview"></section>
   <section id="sites-section" aria-labelledby="h-sites"></section>
-  <section id="guest-section" aria-labelledby="h-guest"></section>
   <section id="add-section" aria-labelledby="h-add"></section>
   <section id="runs-section" aria-labelledby="h-runs"></section>
   <section id="legacy-section" aria-labelledby="h-legacy"></section>
@@ -534,7 +534,7 @@ function demoData(now) {
 var LS_CONN = "backlink_dashboard_conn", LS_THEME = "backlink_dashboard_theme";
 var DEFAULTS = { owner: "CEO3000", repo: "backlink-builder", branch: "main" };
 var state = { data: null, settings: null, settingsSha: null, runs: [], edits: {}, demo: false,
-  guest: { site: "all", tab: "waiting", shown: 12, local: {} } };
+  guest: { tab: {}, shown: {}, open: {}, urls: {}, local: {} } };
 
 var $ = function (sel, root) { return (root || document).querySelector(sel); };
 var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
@@ -636,7 +636,7 @@ function render() {
   pill.className = "chip " + (state.demo ? "info" : "ok"); pill.innerHTML = icon(state.demo ? "info" : "check") + esc(state.demo ? "Demo data" : c.owner + "/" + c.repo);
   $("#btn-run").disabled = !connected || state.demo;
   if (!connected) { renderWelcome(); return; }
-  renderAlerts(); renderOverview(); renderSites(); renderGuests(); renderRuns(); renderLegacy();
+  renderAlerts(); renderOverview(); renderSites(); renderRuns(); renderLegacy();
   if (!$("#add-form")) renderAdd();      // built once, so what the owner has typed is never wiped by a re-render
 }
 
@@ -670,6 +670,12 @@ function renderAlerts() {
     items.push({ kind: "warn", title: nHidden + " of " + nLive + " live backlinks are hidden from Google",
       body: "The links are live, but the platform tells Google not to index these pages and not to follow their links (noindex and nofollow). Until that is lifted they do not help ranking.",
       list: hiddenBy.map(function (s) { return s.name + ": " + s.entry.blocked_from_google + " of " + (s.entry.verified_live_total || 0) + " hidden"; }) });
+  }
+  var waitingBy = siteList().map(function (s) { return { s: s, n: guestCounts(guestList().filter(function (i) { return i.siteId === s.id; }), s.id).waiting }; }).filter(function (w) { return w.n > 0; });
+  if (waitingBy.length) {
+    var nWait = waitingBy.reduce(function (a, w) { return a + w.n; }, 0);
+    items.push({ kind: "info", title: nWait + (nWait === 1 ? " guest post is" : " guest posts are") + " waiting for your click", body: "Open the website below and press Click to submit.",
+      list: waitingBy.map(function (w) { return w.s.name + ": " + w.n; }) });
   }
   var gem = estimateGemini(Object.fromEntries(siteList().map(function (s) { return [s.id, effective(s)]; })));
   if (gem.requests > gem.limit) items.push({ kind: "warn", title: "This plan may use more Gemini requests than the free limit", body: "About " + gem.requests + " requests a day are needed and the free allowance is about " + gem.limit + ". Some articles may wait until the next day." });
@@ -712,7 +718,7 @@ function renderSites() {
   var el = $("#sites-section");
   var head = '<div class="section-head"><h2 id="h-sites">Websites</h2><span class="muted">change how many articles each website gets, then press Save. Changes apply from the next run.</span></div>';
   if (!sites.length) { el.innerHTML = head + '<div class="card empty">No websites yet. Add one below.</div>'; return; }
-  el.innerHTML = head + '<div class="grid grid-2">' + sites.map(function (s) { return siteCard(s, ids, now); }).join("") + "</div>";
+  el.innerHTML = head + '<div class="grid grid-2 sites-grid">' + sites.map(function (s) { return siteCard(s, ids, now); }).join("") + "</div>";
 }
 function siteCard(s, ids, now) {
   var e = s.entry, eff = effective(s), st = siteStatus(e, eff, issuesFor(s.id), now), dirty = JSON.stringify(state.edits[s.id] || {}) !== "{}";
@@ -737,7 +743,7 @@ function siteCard(s, ids, now) {
     '<div class="controls-foot"><button class="btn small" data-action="save" data-site="' + esc(s.id) + '"' + (dirty ? "" : " disabled") + ">Save changes</button>" +
     '<button class="btn quiet small" data-action="reset" data-site="' + esc(s.id) + '"' + (dirty ? "" : " disabled") + ">Undo</button>" +
     '<span class="muted" style="font-size:.8rem">' + (dirty ? "Not saved yet." : pending ? "Saved. Applies at the next run." : "Matches the last run.") + "</span></div></div>" +
-    errorFold(s, st) + linksFold(s) + "</article>";
+    guestFold(s) + errorFold(s, st) + linksFold(s) + "</article>";
 }
 function mini(v, label) { return '<div class="mini"><b class="num">' + esc(v == null ? "–" : v) + "</b><span>" + esc(label) + "</span></div>"; }
 function sumValues(o) { return Object.keys(o || {}).reduce(function (a, k) { return a + (Number(o[k]) || 0); }, 0); }
@@ -811,7 +817,7 @@ async function submitAdd(ev) {
 function showNextSteps(v) {
   openModal('<h2>' + esc(v.name) + ' is added</h2><p class="muted">It starts in review mode.</p><ol class="steps">' +
     '<li><strong>Every day</strong> the machine looks for websites in its niche that clearly accept outside articles and a link back, checks them, and writes an article for each.</li>' +
-    '<li><strong>Nothing is sent yet.</strong> Look at what it prepares under Guest posts, then ask Claude to turn sending on.</li>' +
+    '<li><strong>Nothing is sent yet.</strong> Look at what it prepares under Guest posts in the website’s card, then ask Claude to turn sending on.</li>' +
     '<li>The next daily run is at 09:13 UTC, or press Run now.</li></ol>' +
     '<div style="margin-top:18px;display:flex;gap:10px;justify-content:flex-end"><button class="btn secondary" data-action="close-modal">Close</button></div>');
 }
@@ -871,7 +877,7 @@ function gByHand(i) {
     '<a class="btn secondary small" href="' + esc(safeUrl(i.form_url)) + '" target="_blank" rel="noopener noreferrer">' + icon("ext") + "Open the website\u2019s form</a></div></details>";
 }
 function gPublishBox(id) {
-  return '<div class="qrow"><label class="visually-hidden" for="g-url-' + id + '">Published address</label><input class="input" type="url" id="g-url-' + id + '" placeholder="When it goes live, paste its address here (https://...)">' +
+  return '<div class="qrow"><label class="visually-hidden" for="g-url-' + id + '">Published address</label><input class="input" type="url" id="g-url-' + id + '" placeholder="When it goes live, paste its address here (https://...)" value="' + esc(state.guest.urls[id] || "") + '">' +
     '<button class="btn small" data-action="g-publish" data-g="' + id + '">Save as published</button></div>';
 }
 function gCard(i) {
@@ -886,25 +892,30 @@ function gCard(i) {
   else if (i.status === "ready") action = '<div class="muted">The article is written. It is sent at the next run (or kept back while the website is in review mode).</div>';
   return '<article class="card qcard" aria-label="' + esc(i.domain) + '"><div class="qtitle"><a href="' + esc(safeUrl(i.form_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.domain) + "</a>" +
     (i.captcha ? '<span class="chip info">CAPTCHA</span>' : '<span class="chip">No CAPTCHA</span>') + (i.form_kind === "pitch" ? '<span class="chip warn">Pitch first</span>' : "") + (i.relevance != null ? chip("ok", "Fit " + Math.round(i.relevance) + "/10") : "") +
-    '<span class="muted" style="margin-left:auto;font-size:.8rem">' + esc(siteName(i.siteId)) + "</span></div>" +
+    "</div>" +
     (i.title ? '<div style="font-size:.9rem"><b>Article:</b> ' + esc(i.title) + "</div>" : "") +
     (i.accepts_quote ? '<div class="qtext">Accepts outside articles: \u201c' + esc(i.accepts_quote) + '\u201d\nLinks allowed: \u201c' + esc(i.links_quote || "") + '\u201d</div>' : "") +
     action + "</article>";
 }
-function renderGuests() {
-  var g = state.guest, sec = $("#guest-section"), items = guestList();
-  var counts = guestCounts(items, g.site), view = guestView(items, g.site, g.tab), shown = view.slice(0, g.shown);
-  var sites = siteList();
-  var tabs = GUEST_TABS.map(function (k) { return '<button type="button" data-action="g-tab" data-status="' + k + '" aria-pressed="' + (g.tab === k) + '">' + GUEST_LABEL[k] + " (" + counts[k] + ")</button>"; }).join("");
-  sec.innerHTML = '<div class="qhead"><div><h2 id="h-guest">Guest posts</h2><p class="muted" style="max-width:64ch;margin-top:4px">Websites in each niche that clearly accept articles from outside authors and a link back. ' +
-    "Without a CAPTCHA the machine sends the form itself. With one, press Click to submit: the form fills itself and sends as soon as you tick the CAPTCHA.</p></div>" +
-    '<div><label class="visually-hidden" for="g-site">Website</label><select class="input" id="g-site"><option value="all">All websites</option>' +
-    sites.map(function (s) { return '<option value="' + esc(s.id) + '"' + (g.site === s.id ? " selected" : "") + ">" + esc(s.name) + "</option>"; }).join("") + "</select></div></div>" +
-    '<div class="segmented" role="group" aria-label="Show" style="margin-bottom:14px;flex-wrap:wrap">' + tabs + "</div>" +
+/** One website's guest posts, as a fold inside its card. It opens by itself while a submission waits for the owner's click. The cards are drawn
+    again after every change, so what the owner did here (open or shut, which tab, an address being typed) is remembered in state.guest. */
+function guestFold(s) {
+  var g = state.guest, items = guestList().filter(function (i) { return i.siteId === s.id; }), counts = guestCounts(items, s.id);
+  var tab = g.tab[s.id] || (counts.waiting ? "waiting" : GUEST_TABS.filter(function (k) { return counts[k]; })[0] || "waiting");
+  var view = guestView(items, s.id, tab), shown = view.slice(0, g.shown[s.id] || 12);
+  var open = g.open[s.id] != null ? g.open[s.id] : counts.waiting > 0;
+  var tabs = GUEST_TABS.map(function (k) { return '<button type="button" data-action="g-tab" data-site="' + esc(s.id) + '" data-status="' + k + '" aria-pressed="' + (tab === k) + '">' + GUEST_LABEL[k] + " (" + counts[k] + ")</button>"; }).join("");
+  return '<details class="fold" data-guest-site="' + esc(s.id) + '"' + (open ? " open" : "") + "><summary>" + icon("ext") + " Guest posts " +
+    (counts.waiting ? chip("warn", counts.waiting + " waiting for you") : '<span class="chip info">' + items.length + "</span>") + '<span class="chev">' + icon("chev") + '</span></summary><div class="fold-body">' +
+    '<p class="hint" style="margin:0 0 10px">Websites that clearly accept articles from outside authors and a link back. Without a CAPTCHA the machine sends the form itself. With one, press Click to submit: the form fills itself and sends as soon as you tick the CAPTCHA.</p>' +
+    '<div class="segmented" role="group" aria-label="Show" style="margin-bottom:12px;flex-wrap:wrap">' + tabs + "</div>" +
     (shown.length ? '<div style="display:grid;gap:12px">' + shown.map(gCard).join("") + "</div>" :
-      '<div class="card"><div class="empty">' + (items.length ? "Nothing here." : "No guest posts yet. Every day the machine looks for websites that accept outside articles in each niche.") + "</div></div>") +
-    (view.length > shown.length ? '<div style="margin-top:14px;text-align:center"><button class="btn secondary" data-action="g-more">Show ' + Math.min(12, view.length - shown.length) + " more</button></div>" : "");
+      '<div class="empty">' + (items.length ? "Nothing here." : "No guest posts yet. Every day the machine looks for websites that accept outside articles in this niche.") + "</div>") +
+    (view.length > shown.length ? '<div style="margin-top:12px;text-align:center"><button class="btn secondary" data-action="g-more" data-site="' + esc(s.id) + '">Show ' + Math.min(12, view.length - shown.length) + " more</button></div>" : "") +
+    "</div></details>";
 }
+/** The guest posts live inside each website's card, so drawing them means drawing the cards. */
+function renderGuests() { renderSites(); }
 async function guestSet(id, change) {
   try {
     if (!state.demo) {
@@ -954,8 +965,8 @@ document.addEventListener("click", async function (ev) {
   if (a === "close-modal" || (a === "close-modal-bg" && ev.target === t)) return closeModal();
   if (a === "signout") { localStorage.removeItem(LS_CONN); closeModal(); state.data = null; state.settings = null; render(); return toast("Signed out. The token was removed from this browser."); }
   if (a === "copy") { try { await navigator.clipboard.writeText(t.dataset.copy); toast("Copied " + t.dataset.copy); } catch (e) { toast("Copy failed. Select the name and copy it by hand.", "error"); } return; }
-  if (a === "g-tab") { state.guest.tab = t.dataset.status; state.guest.shown = 12; return renderGuests(); }
-  if (a === "g-more") { state.guest.shown += 12; return renderGuests(); }
+  if (a === "g-tab") { state.guest.tab[t.dataset.site] = t.dataset.status; state.guest.shown[t.dataset.site] = 12; return renderGuests(); }
+  if (a === "g-more") { state.guest.shown[t.dataset.site] = (state.guest.shown[t.dataset.site] || 12) + 12; return renderGuests(); }
   if (a === "g-sent") return guestSet(t.dataset.g, { status: "sent" });
   if (a === "g-copy") {
     var gi = guestList().filter(function (x) { return x.id === t.dataset.g; })[0], gp = gi && guestPayload(gi.link), gf = gp && gp.fields[Number(t.dataset.i)];
@@ -975,7 +986,6 @@ document.addEventListener("click", async function (ev) {
 });
 document.addEventListener("change", function (ev) {
   var t = ev.target;
-  if (t.id === "g-site") { state.guest.site = t.value; state.guest.shown = 12; return renderGuests(); }
   if (!t.dataset || !t.dataset.site) return;
   if (t.dataset.field === "articles_per_day") edit(t.dataset.site, { articles_per_day: Number(t.value) });
   if (t.dataset.field === "enabled") edit(t.dataset.site, { enabled: t.checked });
@@ -1002,6 +1012,8 @@ function edit(id, change) {
   Object.keys(next).forEach(function (k) { if (next[k] === saved[k] || (k === "enabled" && (saved.enabled !== false) === next.enabled)) delete next[k]; });
   state.edits[id] = next; renderEdits();
 }
+document.addEventListener("toggle", function (ev) { var d = ev.target; if (d && d.getAttribute && d.getAttribute("data-guest-site")) state.guest.open[d.getAttribute("data-guest-site")] = d.open; }, true);
+document.addEventListener("input", function (ev) { var t = ev.target; if (t && typeof t.id === "string" && t.id.indexOf("g-url-") === 0) state.guest.urls[t.id.slice(6)] = t.value; });
 $("#btn-connect").addEventListener("click", openConnect);
 $("#btn-run").addEventListener("click", async function () {
   var b = this; b.disabled = true;
