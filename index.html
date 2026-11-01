@@ -229,7 +229,7 @@ details.fold > .fold-body { padding: 0 20px 16px; }
   <section id="overview" aria-labelledby="h-overview"></section>
   <section id="chart-section" aria-labelledby="h-chart"></section>
   <section id="sites-section" aria-labelledby="h-sites"></section>
-  <section id="queue-section" aria-labelledby="h-queue"></section>
+  <section id="guest-section" aria-labelledby="h-guest"></section>
   <section id="add-section" aria-labelledby="h-add"></section>
   <section id="runs-section" aria-labelledby="h-runs"></section>
   <section id="legacy-section" aria-labelledby="h-legacy"></section>
@@ -273,10 +273,6 @@ function hostOf(url) {
   try { return new URL(url).hostname.toLowerCase(); } catch (e) { return ""; }
 }
 function bareHost(url) { return hostOf(url).replace(/^www\./, ""); }
-
-function defaultSecretName(id) {
-  return "DEVTO_API_KEY_" + String(id).toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-}
 
 /** Lines of "address | what it is" (the part after | is optional) become [{url, about}]. */
 function parsePages(text, siteUrl) {
@@ -328,11 +324,11 @@ function validateNewSite(form, existingIds, existingHosts) {
   if (!Number.isInteger(perDay) || perDay < 1 || perDay > 10) errors.articlesPerDay = "Choose 1 to 10 articles a day.";
   var mode = form.mode === "draft" ? "draft" : "live";
 
-  var secretName = String(form.secretName || "").trim() || defaultSecretName(id);
-  if (!/^[A-Z][A-Z0-9_]{2,60}$/.test(secretName)) errors.secretName = "Use capital letters, digits and underscores only.";
+  var author = String(form.author || "").trim();
+  if (!/^[A-Za-z][A-Za-z .'-]{1,59}$/.test(author)) errors.author = "Write the author's name as it should appear on articles (letters and spaces).";
 
   if (Object.keys(errors).length) return { errors: errors, value: null };
-  return { errors: {}, value: { id: id, name: name, url: url, description: description, facts: facts, pages: pages, articlesPerDay: perDay, mode: mode, secretName: secretName } };
+  return { errors: {}, value: { id: id, name: name, url: url, description: description, facts: facts, pages: pages, articlesPerDay: perDay, mode: mode, author: author } };
 }
 
 /** The site file the email scheduler reads. email_outreach: false is what keeps a publishing site from ever being cold-emailed. */
@@ -364,7 +360,7 @@ function buildPublishingYaml(v) {
     "  gemini_patience_seconds: [90, 240, 420]", "  gemini_wait_budget_seconds: 1200", "",
     "discovery:", "  new_candidates_per_run: 10", "  inspect_per_run: 8", "  firecrawl_scrapes_per_run: 4", "",
     "verification:", "  canonical_hosts: [" + hosts.map(yq).join(", ") + "]", "",
-    "platforms:", "  devto:", "    enabled: true", "    api_key_env: " + yq(v.secretName), "",
+    "guest_posts:", "  submit: false", "  author: " + yq(v.author), "  bio: " + yq(v.author + " runs [" + v.name + "]({home}), " + v.description + "."), "",
     "qualification:", "  site_label: " + yq(v.description), "  fit_criteria: " + yq("fit with " + v.description), "",
     "facts:"
   ];
@@ -400,7 +396,7 @@ function mergeSettings(doc, siteId, changes) {
 function explainError(category, status, message) {
   var text = String(message || "");
   var map = {
-    auth: ["The platform refused the key.", "Check that the DEV key secret on GitHub is correct and has not been revoked."],
+    auth: ["A key or login was refused.", "Check that the secret on GitHub is correct and has not been revoked."],
     quota: ["Gemini's free daily limit is used up.", "Nothing to do: it tries again on the next run, when the limit resets."],
     busy: ["Gemini was busy.", "Nothing to do: it waits and tries again."],
     network: ["A network problem.", "Nothing to do: it tries again."],
@@ -439,7 +435,7 @@ function siteStatus(entry, settings, issues, now) {
   });
   var ranToday = String(entry.updated_at).slice(0, 10) === now.toISOString().slice(0, 10);
   if (level !== "error") {
-    if (ranToday && entry.verified_today < entry.target_per_day) { level = "warn"; reasons.push("Today: " + entry.verified_today + " of " + entry.target_per_day + " backlinks so far."); }
+    if (ranToday && (entry.guest_today || 0) < entry.target_per_day) { level = "warn"; reasons.push("Today: " + (entry.guest_today || 0) + " of " + entry.target_per_day + " guest posts so far (only websites that clearly accept outside articles and links count)."); }
     if (entry.topics_unused != null && entry.topics_unused < 2) { level = level === "ok" ? "warn" : level; reasons.push("Few topics left; new ones are requested automatically."); }
     (entry.notes || []).forEach(function (n) { if (level === "ok") level = "warn"; reasons.push(n); });
   }
@@ -494,36 +490,28 @@ function axisTicks(max) {
   return out;
 }
 
-/** The submit queue: every listed opportunity (never an excluded one) with what the owner has done about it, most useful first. */
-function buildQueue(files, statuses) {
+/** Every guest-post submission across the websites, newest first. */
+function guestItems(bp) {
   var items = [];
-  Object.keys(files || {}).forEach(function (siteId) {
-    var data = files[siteId] || {};
-    Object.keys(data).forEach(function (k) {
-      var e = data[k]; if (!e || e.excluded) return;
-      var st = (statuses || {})[e.id] || {};
-      items.push(Object.assign({}, e, { siteId: siteId, status: st.status || "todo", published_url: st.published_url || "", status_at: st.at || "" }));
-    });
+  Object.keys(bp || {}).forEach(function (siteId) {
+    ((bp[siteId] || {}).guest_posts || []).forEach(function (g) { items.push(Object.assign({}, g, { siteId: siteId })); });
   });
-  var rank = { todo: 0, submitted: 1, published: 2, skipped: 3 };
-  return items.sort(function (a, b) {
-    return (rank[a.status] - rank[b.status]) || ((b.prepared ? 1 : 0) - (a.prepared ? 1 : 0)) || ((b.fit || 0) - (a.fit || 0)) || String(a.domain).localeCompare(String(b.domain));
-  });
+  return items.sort(function (a, b) { return String(b.updated_at || "").localeCompare(String(a.updated_at || "")); });
 }
-function queueCounts(items, site) {
-  var c = { todo: 0, submitted: 0, published: 0, skipped: 0 };
-  (items || []).forEach(function (i) { if (site === "all" || i.siteId === site) c[i.status] = (c[i.status] || 0) + 1; });
+var GUEST_TABS = ["waiting", "ready", "sent", "published", "not_accepted"];
+function guestCounts(items, site) {
+  var c = {}; GUEST_TABS.forEach(function (k) { c[k] = 0; });
+  (items || []).forEach(function (i) { if ((site === "all" || i.siteId === site) && c[i.status] != null) c[i.status]++; });
   return c;
 }
-function queueView(items, site, status) {
-  return (items || []).filter(function (i) { return (site === "all" || i.siteId === site) && i.status === status; });
+function guestView(items, site, tab) {
+  return (items || []).filter(function (i) { return (site === "all" || i.siteId === site) && i.status === tab; });
 }
-/** The owner's record (state/assist_status.json) after one change. "todo" forgets the entry; "published" needs the full https address. */
-function mergeAssistStatus(doc, id, change, now) {
+/** state/guestpost_status.json after one of the owner's actions: "sent" (after the CAPTCHA) or "published" (with the full https address). */
+function mergeGuestStatus(doc, id, change, now) {
   var out = Object.assign({}, doc || {});
-  if (!/^[0-9a-f]{8,32}$/.test(String(id))) throw new Error("Unknown opportunity.");
-  if (change.status === "todo") { delete out[id]; return out; }
-  if (["submitted", "skipped", "published"].indexOf(change.status) < 0) throw new Error("Unknown status.");
+  if (!/^[0-9a-f]{8,32}$/.test(String(id))) throw new Error("Unknown submission.");
+  if (["sent", "published"].indexOf(change.status) < 0) throw new Error("Unknown status.");
   var url = String(change.published_url || (out[id] && out[id].published_url) || "").trim();
   if (change.status === "published" && !/^https:\/\/[^\s\/]+\.[^\s]+$/i.test(url)) throw new Error("Paste the full address of the published page, starting with https://");
   out[id] = { status: change.status, published_url: url, at: (now || new Date()).toISOString() };
@@ -539,8 +527,8 @@ function demoData(now) {
     return Object.assign({ updated_at: iso, name: name, url: url, settings: { articles_per_day: target, mode: "live", enabled: true }, target_per_day: target,
       verified_today: verified, published_today: verified, verified_live_total: hist_.reduce(function (a, h) { return a + h.verified; }, 0), pending_approval: 0,
       topics_unused: 9, by_status: {}, failures_today: {}, history: hist_, errors: [], blocked: [], notes: [],
-      live_links: [{ url: "https://dev.to/example/post-1", title: "A practical guide", anchor: "request a book", follow: true, verified_at: iso, platform: "DEV.to", target: url, indexable: true, counts_for_seo: true },
-        { url: "https://dev.to/example/post-2", title: "Another article", anchor: "write a book", follow: true, verified_at: iso, platform: "DEV.to", target: url, indexable: false, counts_for_seo: false }],
+      live_links: [{ url: "https://authorsdaily.example.net/blog/planning-a-book", title: "A practical guide", anchor: "request a book", follow: true, verified_at: iso, platform: "Guest post", target: url, indexable: true, counts_for_seo: true },
+        { url: "https://writersweekly.example.com/guest/another", title: "Another article", anchor: "write a book", follow: true, verified_at: iso, platform: "Guest post", target: url, indexable: false, counts_for_seo: false }],
       counted_by_google: 1, blocked_from_google: 1 }, extra || {});
   }
   var bp = {
@@ -550,27 +538,22 @@ function demoData(now) {
       errors: [{ at: iso, title: "Meeting people through local activities", status: "RETRY_REQUIRED", category: "quota", message: "Gemini quota exhausted (HTTP 429): GenerateRequestsPerDayPerProjectPerModel-FreeTier (limit 20)" }],
       notes: ["Stopping for today: Gemini is unavailable, so no further article can be written."] })
   };
-  function opp(id, domain, title, kind, label, how, fit, fitLabel, prepared, extra) {
-    return Object.assign({ id: id, domain: domain, page_url: "https://" + domain + "/write-for-us", page_title: title, kind: kind, kind_label: label, how: how, fit: fit, fit_label: fitLabel,
-      prepared: prepared, attempts: 0, excluded: null, from_name: "Genbooks team", from_email: "hello@genbooks.uk", website: "https://genbooks.uk" },
-      prepared ? { title: "Write for One Reader: How to Define Who Your Book Is For", description: "A practical way to stop writing for everyone: describe one reader and test each chapter against them.",
-        body_markdown: "Many first drafts begin with a quiet promise...\n\n## Describe one person in detail\n\nStart with a short portrait, not a market category.", word_count: 640,
-        anchor: "saying who a book is for", target_url: "https://genbooks.uk/",
-        note: "Hello,\n\nI would like to offer an article for " + title + ": \"Write for One Reader\". It is a practical guide for authors whose books try to speak to everyone, about 640 words, written for this submission and not published elsewhere. I am happy to change the length, tone or angle to suit your readers.\n\nThank you,\nGenbooks team\nhttps://genbooks.uk" } : {}, extra || {});
+  var ACC = "We welcome guest posts from outside writers on writing and publishing books.", LNK = "You may include one link to your own website in your author bio.";
+  function gp(id, domain, status, extra) {
+    return Object.assign({ id: id, domain: domain, site_name: "Write for us - " + domain, form_url: "https://" + domain + "/write-for-us", status: status, captcha: false,
+      accepts_quote: ACC, links_quote: LNK, relevance: 8, reason: "a community of first-time authors", title: "Write for One Reader: How to Define Who Your Book Is For", updated_at: iso }, extra || {});
   }
-  var qfiles = { "genbooks-uk": {
-    a1: opp("a1a1a1a1a1a1a1a1", "bookwritingtips.com", "Book Writing Tips: Write for Us", "captcha_required", "CAPTCHA", "Paste the text, solve the CAPTCHA yourself and press Send.", 90, "Good fit", true),
-    a2: opp("a2a2a2a2a2a2a2a2", "authorsguild.org", "Resource Library - The Authors Guild", "email_only", "Email", "Send it from your own email: this system never emails on your behalf.", 30, "Possible fit", true),
-    a3: opp("a3a3a3a3a3a3a3a3", "selfpubhub.example.org", "Self-publishing Hub: Contribute", "form_submission", "Form", "Paste the text into the form and press Send.", 60, "Good fit", false),
-    a4: opp("a4a4a4a4a4a4a4a4", "alistapart.com", "Write for Us - A List Apart", "form_submission", "Form", "Paste the text into the form and press Send.", 0, "Unclear fit", false),
-    a5: opp("a5a5a5a5a5a5a5a5", "writersweekly.example.com", "Writers Weekly: Guest Articles", "captcha_required", "CAPTCHA", "Paste the text, solve the CAPTCHA yourself and press Send.", 60, "Good fit", true,
-      { published: { url: "https://writersweekly.example.com/guest/one-reader", outcome: "verified", follow: true, indexable: true, counts_for_seo: true } })
-  } };
-  var qstatus = { a5a5a5a5a5a5a5a5: { status: "published", published_url: "https://writersweekly.example.com/guest/one-reader", at: iso } };
+  bp["genbooks-uk"].guest_posts = [
+    gp("a1a1a1a1a1a1a1a1", "writershub.example.org", "waiting", { captcha: true, relevance: 9, link: "https://writershub.example.org/write-for-us#bl=demo" }),
+    gp("a2a2a2a2a2a2a2a2", "selfpubtips.example.com", "sent", { sent_on: day(0), how: "automatically", title: "How Long Should Your Book Be?" }),
+    gp("a3a3a3a3a3a3a3a3", "authorsdaily.example.net", "published", { sent_on: day(9), how: "by you (CAPTCHA)", publication_url: "https://authorsdaily.example.net/blog/planning-a-book", counts_for_seo: true }),
+    gp("a4a4a4a4a4a4a4a4", "bookclub.example.org", "not_accepted", { note: "not published within 60 days of sending" }),
+    gp("a5a5a5a5a5a5a5a5", "novelnotes.example.org", "ready", { title: "Choosing a Voice for Your Book" })
+  ];
+  bp["genbooks-uk"].guest_today = 2; bp["hypnotreatment-uk"].guest_today = 2; bp["social-field"].guest_today = 1;
   return {
     dashboard: { generated_at: iso, sites: [], backlink_publishing: bp, publishing_issues: [] },
     settings: { sites: { "genbooks-uk": { articles_per_day: 2, mode: "live", enabled: true }, "hypnotreatment-uk": { articles_per_day: 2, mode: "live", enabled: true }, "social-field": { articles_per_day: 2, mode: "live", enabled: true } } },
-    queue: { files: qfiles, statuses: qstatus },
     runs: [
       { id: 3, run_number: 211, status: "completed", conclusion: "success", event: "workflow_dispatch", created_at: iso, updated_at: iso, html_url: "https://github.com/", run_started_at: new Date(now.getTime() - 5 * 60000).toISOString() },
       { id: 2, run_number: 210, status: "completed", conclusion: "success", event: "workflow_dispatch", created_at: day(1) + "T09:13:00Z", updated_at: day(1) + "T09:19:00Z", html_url: "https://github.com/", run_started_at: day(1) + "T09:13:00Z" }
@@ -588,7 +571,7 @@ function demoData(now) {
 var LS_CONN = "backlink_dashboard_conn", LS_THEME = "backlink_dashboard_theme";
 var DEFAULTS = { owner: "CEO3000", repo: "backlink-builder", branch: "main" };
 var state = { data: null, settings: null, settingsSha: null, runs: [], edits: {}, demo: false, chartTable: false,
-  queue: { items: [], statuses: {}, site: "all", tab: "todo", shown: 12, loaded: false } };
+  guest: { site: "all", tab: "waiting", shown: 12, local: {} } };
 
 var $ = function (sel, root) { return (root || document).querySelector(sel); };
 var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
@@ -653,7 +636,7 @@ function toast(msg, kind) {
 /* ---------- Data ---------- */
 async function load() {
   if (state.demo) { var d = demoData(); state.data = d.dashboard; state.settings = d.settings; state.settingsSha = "demo"; state.runs = d.runs;
-    state.queue = Object.assign(state.queue, { items: buildQueue(d.queue.files, d.queue.statuses), statuses: d.queue.statuses, loaded: true }); render(); return; }
+    render(); return; }
   var c = conn();
   if (!c.token) { render(); return; }
   setLoading();
@@ -668,7 +651,7 @@ async function load() {
   if (out[2].status === "rejected") problems.push("Could not load the run history: " + out[2].reason.message);
   state.loadProblems = problems; state.edits = {};
   render();
-  loadQueue().catch(function () { /* the queue is optional: the rest of the page is already shown */ });
+  recordSentFromLink();
 }
 function setLoading() { $("#overview").innerHTML = '<div class="card pad"><div class="skeleton" style="height:84px"></div></div>'; }
 
@@ -690,7 +673,7 @@ function render() {
   pill.className = "chip " + (state.demo ? "info" : "ok"); pill.innerHTML = icon(state.demo ? "info" : "check") + esc(state.demo ? "Demo data" : c.owner + "/" + c.repo);
   $("#btn-run").disabled = !connected || state.demo;
   if (!connected) { renderWelcome(); return; }
-  renderAlerts(); renderOverview(); renderChart(); renderSites(); renderQueue(); renderRuns(); renderLegacy();
+  renderAlerts(); renderOverview(); renderChart(); renderSites(); renderGuests(); renderRuns(); renderLegacy();
   if (!$("#add-form")) renderAdd();      // built once, so what the owner has typed is never wiped by a re-render
 }
 
@@ -722,7 +705,7 @@ function renderAlerts() {
   if (hiddenBy.length) {
     var nHidden = hiddenBy.reduce(function (a, s) { return a + s.entry.blocked_from_google; }, 0), nLive = siteList().reduce(function (a, s) { return a + ((s.entry && s.entry.verified_live_total) || 0); }, 0);
     items.push({ kind: "warn", title: nHidden + " of " + nLive + " live backlinks are hidden from Google",
-      body: "The links are live, but the platform tells Google not to index these pages and not to follow their links (noindex and nofollow, which platforms such as DEV.to apply to new accounts with no track record). Until that is lifted they do not help ranking.",
+      body: "The links are live, but the platform tells Google not to index these pages and not to follow their links (noindex and nofollow). Until that is lifted they do not help ranking.",
       list: hiddenBy.map(function (s) { return s.name + ": " + s.entry.blocked_from_google + " of " + (s.entry.verified_live_total || 0) + " hidden"; }) });
   }
   var gem = estimateGemini(Object.fromEntries(siteList().map(function (s) { return [s.id, effective(s)]; })));
@@ -738,7 +721,7 @@ function renderOverview() {
   var sites = siteList(), now = new Date(), today = now.toISOString().slice(0, 10);
   var active = sites.filter(function (s) { return effective(s).enabled !== false; });
   var todays = active.filter(function (s) { return s.entry && String(s.entry.updated_at).slice(0, 10) === today; });
-  var done = todays.reduce(function (a, s) { return a + (s.entry.verified_today || 0); }, 0);
+  var done = todays.reduce(function (a, s) { return a + (s.entry.guest_today || 0); }, 0);
   var planned = active.reduce(function (a, s) { return a + (Number(effective(s).articles_per_day) || 0); }, 0);
   var live = sites.reduce(function (a, s) { return a + ((s.entry && s.entry.verified_live_total) || 0); }, 0);
   var counted = sites.reduce(function (a, s) { return a + ((s.entry && s.entry.counted_by_google) || 0); }, 0);
@@ -746,10 +729,10 @@ function renderOverview() {
   var last = state.runs[0], pct = planned ? Math.min(100, Math.round(done / planned * 100)) : 0;
   var cls = gem.requests > gem.limit ? "crit" : gem.requests > gem.limit * .75 ? "warn" : "";
   $("#overview").innerHTML = '<h2 id="h-overview" class="visually-hidden">Overview</h2><div class="hero">' +
-    '<div class="card pad"><div class="muted" style="font-size:.82rem;font-weight:650">Backlinks verified today (UTC)</div>' +
+    '<div class="card pad"><div class="muted" style="font-size:.82rem;font-weight:650">Guest posts sent today (UTC)</div>' +
     '<div class="hero-figure num" style="margin:8px 0 12px">' + done + '<small> of ' + planned + ' planned</small></div>' +
     '<div class="meter ' + (pct >= 100 ? "good" : "") + '" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '" aria-label="Share of today’s plan completed"><span style="width:' + pct + '%"></span></div>' +
-    '<p class="hint">Counts only links found on the live page. The daily run starts at 09:13 UTC (' + esc(localTime(9, 13)) + " your time).</p></div>" +
+    '<p class="hint">Sent automatically, or by your click when a website has a CAPTCHA. A backlink counts once the article is live with the link. The daily run starts at 09:13 UTC (' + esc(localTime(9, 13)) + " your time).</p></div>" +
     '<div class="grid grid-stats">' +
     stat("Live backlinks in total", live, sites.some(function (x) { return x.entry && x.entry.counted_by_google != null; }) ? counted + " count for Google" : "found on the live pages") +
     stat("Websites", active.length + (sites.length - active.length ? " + " + (sites.length - active.length) + " paused" : ""), sites.length + " added") +
@@ -820,7 +803,7 @@ function renderSites() {
 function siteCard(s, ids, now) {
   var e = s.entry, eff = effective(s), st = siteStatus(e, eff, issuesFor(s.id), now), dirty = JSON.stringify(state.edits[s.id] || {}) !== "{}";
   var target = Number(eff.articles_per_day) || (e && e.target_per_day) || 0, today = String((e && e.updated_at) || "").slice(0, 10) === now.toISOString().slice(0, 10);
-  var done = today ? e.verified_today : 0, pct = target ? Math.min(100, Math.round(done / target * 100)) : 0;
+  var done = today ? (e.guest_today || 0) : 0, pct = target ? Math.min(100, Math.round(done / target * 100)) : 0;
   var perDay = '<select class="input" id="pd-' + esc(s.id) + '" data-field="articles_per_day" data-site="' + esc(s.id) + '">' +
     [1, 2, 3, 4, 5, 6, 8, 10].map(function (n) { return '<option value="' + n + '"' + (Number(eff.articles_per_day) === n ? " selected" : "") + ">" + n + (n === 1 ? " article a day" : " articles a day") + "</option>"; }).join("") + "</select>";
   var applied = e && e.settings, pending = applied && (Number(applied.articles_per_day) !== Number(eff.articles_per_day) || applied.mode !== eff.mode || (applied.enabled !== false) !== (eff.enabled !== false));
@@ -829,15 +812,14 @@ function siteCard(s, ids, now) {
     (s.url ? '<div class="site-url"><a href="' + esc(safeUrl(s.url)) + '" target="_blank" rel="noopener noreferrer">' + esc(s.url.replace(/^https?:\/\//, "")) + "</a></div>" : "") + "</div>" + chip(st.level, st.label) + "</div>" +
     '<div class="site-body">' +
     ((st.level === "warn" || st.level === "error") && st.reasons.length ? '<ul class="why" aria-label="Why this website needs a look">' + st.reasons.slice(0, 3).map(function (r) { return "<li>" + esc(r) + "</li>"; }).join("") + "</ul>" : "") +
-    (e ? '<div class="site-progress"><div class="row"><span><b class="num">' + done + " of " + target + '</b> verified today</span><span class="muted">' + (today ? "updated " + timeAgo(e.updated_at, now) : "waiting for today’s run") + '</span></div><div class="meter ' + (pct >= 100 ? "good" : "") + '" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '" aria-label="Progress today"><span style="width:' + pct + '%"></span></div></div>' +
+    (e ? '<div class="site-progress"><div class="row"><span><b class="num">' + done + " of " + target + '</b> guest posts sent today</span><span class="muted">' + (today ? "updated " + timeAgo(e.updated_at, now) : "waiting for today’s run") + '</span></div><div class="meter ' + (pct >= 100 ? "good" : "") + '" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '" aria-label="Progress today"><span style="width:' + pct + '%"></span></div></div>' +
       '<div class="mini-stats">' + mini(e.verified_live_total, "live in total") + mini(e.topics_unused, "topics ready") + mini(e.pending_approval || 0, "waiting approval") + mini((e.errors || []).length + (e.blocked || []).length, "open errors") + "</div>"
       : '<p class="muted" style="margin-bottom:14px">No results yet. ' + esc(st.reasons[0] || "") + "</p>") + "</div>" +
-    '<div class="controls"><div class="controls-row"><div><label class="field" for="pd-' + esc(s.id) + '">Articles per day</label>' + perDay + "</div>" +
+    '<div class="controls"><div class="controls-row"><div><label class="field" for="pd-' + esc(s.id) + '">Guest posts per day</label>' + perDay + "</div>" +
     '<div><span class="field" id="m-' + esc(s.id) + '">Publishing</span><div class="segmented" role="group" aria-labelledby="m-' + esc(s.id) + '">' +
     '<button type="button" id="mode-' + esc(s.id) + '-live" data-action="mode" data-site="' + esc(s.id) + '" data-mode="live" aria-pressed="' + (eff.mode !== "draft") + '">Automatic</button>' +
     '<button type="button" id="mode-' + esc(s.id) + '-draft" data-action="mode" data-site="' + esc(s.id) + '" data-mode="draft" aria-pressed="' + (eff.mode === "draft") + '">Private drafts</button></div></div>' +
     '<div><label class="switch"><input type="checkbox" id="en-' + esc(s.id) + '" role="switch" data-field="enabled" data-site="' + esc(s.id) + '"' + (eff.enabled !== false ? " checked" : "") + '><span class="track"></span><span>' + (eff.enabled !== false ? "Active" : "Paused") + "</span></label></div></div>" +
-    (Number(eff.articles_per_day) >= 4 ? '<p class="hint">Heads up: several posts a day from one DEV.to account can look like spam to the platform. It is your call; the daily results will show if anything is held back.</p>' : "") +
     '<div class="controls-foot"><button class="btn small" data-action="save" data-site="' + esc(s.id) + '"' + (dirty ? "" : " disabled") + ">Save changes</button>" +
     '<button class="btn quiet small" data-action="reset" data-site="' + esc(s.id) + '"' + (dirty ? "" : " disabled") + ">Undo</button>" +
     '<span class="muted" style="font-size:.8rem">' + (dirty ? "Not saved yet." : pending ? "Saved. Applies at the next run." : "Matches the last run.") + "</span></div></div>" +
@@ -876,7 +858,7 @@ function renderAdd() {
     field("articlesPerDay", "Articles per day", '<select class="input" id="f-articlesPerDay" name="articlesPerDay">' + [1, 2, 3, 4, 5].map(function (n) { return '<option value="' + n + '"' + (n === 2 ? " selected" : "") + ">" + n + "</option>"; }).join("") + "</select>") +
     field("mode", "Publishing", '<select class="input" id="f-mode" name="mode"><option value="live" selected>Automatic</option><option value="draft">Private drafts (you publish)</option></select>', "Tip: choose Private drafts for the very first day if you want to read the first articles before they go public.") +
     field("id", "Short id", '<input class="input" id="f-id" name="id" autocomplete="off" placeholder="made from the name">', "Lowercase letters, digits and dashes. Used for the file names.") +
-    field("secretName", "Name of the DEV.to key secret", '<input class="input" id="f-secretName" name="secretName" autocomplete="off" placeholder="made from the id">', "You save the key on GitHub under exactly this name (the next step shows how).") +
+    field("author", "Author name on its guest posts", '<input class="input" id="f-author" name="author" autocomplete="off" placeholder="e.g. Jane Smith, or Acme team">', "Editors prefer a real person's name.") +
     '</div><div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="submit">' + icon("plus") + 'Add website</button><button class="btn secondary" type="reset" data-action="clear-errors">Clear</button></div></form></details>';
 }
 function field(name, label, control, hint, cls) {
@@ -913,12 +895,10 @@ async function submitAdd(ev) {
   } catch (e) { toast("Could not add the website: " + e.message, "error"); btn.disabled = false; }
 }
 function showNextSteps(v) {
-  var c = conn();
-  openModal('<h2>' + esc(v.name) + ' is added</h2><p class="muted">Two quick steps on other websites, then it runs by itself.</p><ol class="steps">' +
-    '<li><strong>Create its DEV.to account</strong> and give it the website’s name. <a href="https://dev.to/enter" target="_blank" rel="noopener noreferrer">Open dev.to</a></li>' +
-    '<li><strong>Create an API key</strong> in the account: Settings, Extensions, “Generate API key”. <a href="https://dev.to/settings/extensions" target="_blank" rel="noopener noreferrer">Open the key page</a></li>' +
-    '<li><strong>Save the key on GitHub</strong> as a secret named <code>' + esc(v.secretName) + '</code> (paste the key as the value). <button class="btn quiet small" data-action="copy" data-copy="' + esc(v.secretName) + '">' + icon("copy") + 'Copy name</button> <a href="https://github.com/' + esc(c.owner) + "/" + esc(c.repo) + '/settings/secrets/actions/new" target="_blank" rel="noopener noreferrer">Open the new-secret page</a></li>' +
-    '<li><strong>Done.</strong> The next daily run (09:13 UTC) starts publishing. Until the key exists, the website shows “Error: publishing is blocked” here, which is expected.</li></ol>' +
+  openModal('<h2>' + esc(v.name) + ' is added</h2><p class="muted">It starts in review mode.</p><ol class="steps">' +
+    '<li><strong>Every day</strong> the machine looks for websites in its niche that clearly accept outside articles and a link back, checks them, and writes an article for each.</li>' +
+    '<li><strong>Nothing is sent yet.</strong> Look at what it prepares under Guest posts, then ask Claude to turn sending on.</li>' +
+    '<li>The next daily run is at 09:13 UTC, or press Run now.</li></ol>' +
     '<div style="margin-top:18px;display:flex;gap:10px;justify-content:flex-end"><button class="btn secondary" data-action="close-modal">Close</button></div>');
 }
 
@@ -950,88 +930,69 @@ async function saveSettings(siteId, changes) {
   }
 }
 
-/* ---------- Submit queue ---------- */
-var STATUS_LABEL = { todo: "To do", submitted: "Submitted", published: "Published", skipped: "Skipped" };
+/* ---------- Guest posts ---------- */
+var GUEST_LABEL = { waiting: "Waiting for you", ready: "Prepared", sent: "Sent", published: "Published", not_accepted: "Not accepted" };
 function siteName(id) { var s = siteList().filter(function (x) { return x.id === id; })[0]; return s ? s.name : id; }
-function qItem(id) { return state.queue.items.filter(function (x) { return x.id === id; })[0]; }
-
-async function loadQueue() {
-  var files = {}, jobs = siteList().filter(function (s) { return s.entry && s.entry.assist && s.entry.assist.file; }).map(function (s) {
-    return ghGetFile(s.entry.assist.file).then(function (f) { if (f) files[s.id] = JSON.parse(f.content); }).catch(function () { /* one site's file missing: the others still show */ });
-  });
-  var statuses = {};
-  var got = await Promise.allSettled([Promise.all(jobs), ghGetFile("state/assist_status.json")]);
-  if (got[1].status === "fulfilled" && got[1].value) { try { statuses = JSON.parse(got[1].value.content); } catch (e) { statuses = {}; } }
-  state.queue.items = buildQueue(files, statuses); state.queue.statuses = statuses; state.queue.loaded = true;
-  renderQueue();
+function guestList() {
+  return guestItems(state.data && state.data.backlink_publishing).map(function (i) { return Object.assign(i, state.guest.local[i.id] || {}); });
 }
-
-function qField(label, text, part, i) {
-  return '<div><div class="qrow" style="justify-content:space-between"><b style="font-size:.82rem">' + esc(label) + '</b><button class="btn quiet small" data-action="q-copy" data-q="' + esc(i.id) + '" data-part="' + part + '">' + icon("copy") + "Copy</button></div>" +
-    '<div class="qtext">' + esc(text) + "</div></div>";
+function gPublishBox(id) {
+  return '<div class="qrow"><label class="visually-hidden" for="g-url-' + id + '">Published address</label><input class="input" type="url" id="g-url-' + id + '" placeholder="When it goes live, paste its address here (https://...)">' +
+    '<button class="btn small" data-action="g-publish" data-g="' + id + '">Save as published</button></div>';
 }
-function qResult(i) {
-  var p = i.published || {};
-  return '<div class="qrow"><a href="' + esc(safeUrl(i.published_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.published_url) + "</a>" +
-    (p.outcome === "verified" ? (p.counts_for_seo ? chip("ok", "Link found, Google can count it") : chip("warn", "Link found, but hidden from Google")) :
-      p.outcome ? chip("warn", "Link not found on that page yet") : '<span class="muted">It is checked at the next daily run.</span>') + "</div>";
-}
-function qCard(i) {
-  var id = esc(i.id);
-  var fitLevel = i.fit_label === "Good fit" ? "ok" : i.fit_label === "Possible fit" ? "new" : "warn";
-  var prep = i.prepared ? '<div class="qprep">' +
-    qField("Your details", [i.from_name, i.from_email, i.website].filter(Boolean).join("\n"), "details", i) +
-    qField("Short message (for the form's message box)", i.note, "note", i) +
-    qField("Title", i.title, "title", i) + qField("Description", i.description, "description", i) +
-    '<details class="fold"><summary>' + icon("chev") + " Article (" + esc(i.word_count || "") + " words, markdown)</summary><div class=\"fold-body\">" + qField("Article", i.body_markdown, "article", i) + "</div></details></div>"
-    : '<div class="qprep"><span class="muted">The article is not ready yet. The machine prepares the best fits first, a few a day, using the free Gemini allowance left after the real publishing.</span></div>';
-  var buttons = '<div class="qrow"><a class="btn secondary small" href="' + esc(safeUrl(i.page_url)) + '" target="_blank" rel="noopener noreferrer">' + icon("ext") + "Open the submission page</a>" +
-    (i.status === "todo" ? '<button class="btn small" data-action="q-status" data-q="' + id + '" data-status="submitted">Mark submitted</button><button class="btn quiet small" data-action="q-status" data-q="' + id + '" data-status="skipped">Skip</button>'
-      : '<button class="btn quiet small" data-action="q-status" data-q="' + id + '" data-status="todo">Move back to To do</button>') + "</div>";
-  var publish = (i.status === "todo" || i.status === "submitted") ? '<div class="qrow"><label class="visually-hidden" for="q-url-' + id + '">Published address</label><input class="input" type="url" id="q-url-' + id + '" placeholder="When it goes live, paste the published address here (https://...)">' +
-    '<button class="btn small" data-action="q-publish" data-q="' + id + '">Save as published</button></div>' : "";
-  return '<article class="card qcard" aria-label="' + esc(i.domain) + '"><div class="qtitle"><a href="' + esc(safeUrl(i.page_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.domain) + "</a>" +
-    '<span class="chip info">' + esc(i.kind_label) + "</span>" + chip(fitLevel, i.fit_label) + (i.status !== "todo" ? '<span class="chip">' + esc(STATUS_LABEL[i.status]) + "</span>" : "") +
+function gCard(i) {
+  var id = esc(i.id), action = "";
+  if (i.status === "waiting" && i.link) action = '<div class="qrow"><a class="btn" href="' + esc(safeUrl(i.link)) + '" target="_blank" rel="noopener noreferrer">' + icon("ext") + 'Click to submit</a>' +
+    '<button class="btn quiet small" data-action="g-sent" data-g="' + id + '">I sent it</button></div><p class="hint">The page opens and fills itself. Tick the CAPTCHA and it sends by itself (needs the Backlink helper extension in Chrome).</p>';
+  else if (i.status === "sent") action = '<div class="muted">Sent ' + esc(i.sent_on || "") + (i.how ? " (" + esc(i.how) + ")" : "") + ". The editor decides; replies go to the website's email. The system checks the site's sitemap for the article.</div>" + gPublishBox(id);
+  else if (i.status === "published") action = '<div class="qrow"><a href="' + esc(safeUrl(i.publication_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.publication_url || "") + "</a>" +
+    (i.counts_for_seo === true ? chip("ok", "Google can count it") : i.counts_for_seo === false ? chip("warn", "Hidden from Google") : '<span class="muted">The link is checked at the next daily run.</span>') + "</div>";
+  else if (i.status === "not_accepted") action = '<div class="muted">' + esc(i.note || "") + "</div>";
+  else if (i.status === "ready") action = '<div class="muted">The article is written. It is sent at the next run (or kept back while the website is in review mode).</div>';
+  return '<article class="card qcard" aria-label="' + esc(i.domain) + '"><div class="qtitle"><a href="' + esc(safeUrl(i.form_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.domain) + "</a>" +
+    (i.captcha ? '<span class="chip info">CAPTCHA</span>' : '<span class="chip">No CAPTCHA</span>') + (i.relevance != null ? chip("ok", "Fit " + Math.round(i.relevance) + "/10") : "") +
     '<span class="muted" style="margin-left:auto;font-size:.8rem">' + esc(siteName(i.siteId)) + "</span></div>" +
-    '<div class="muted" style="font-size:.85rem">' + esc(i.page_title) + " &middot; " + esc(i.how) + "</div>" +
-    (i.status === "published" ? qResult(i) : "") + prep + buttons + publish + "</article>";
+    (i.title ? '<div style="font-size:.9rem"><b>Article:</b> ' + esc(i.title) + "</div>" : "") +
+    (i.accepts_quote ? '<div class="qtext">Accepts outside articles: \u201c' + esc(i.accepts_quote) + '\u201d\nLinks allowed: \u201c' + esc(i.links_quote || "") + '\u201d</div>' : "") +
+    action + "</article>";
 }
-function renderQueue() {
-  var q = state.queue, sec = $("#queue-section");
-  if (!q || !q.loaded || !q.items.length) { sec.innerHTML = ""; return; }
-  var counts = queueCounts(q.items, q.site), view = queueView(q.items, q.site, q.tab), shown = view.slice(0, q.shown);
-  var sites = siteList().filter(function (s) { return q.items.some(function (i) { return i.siteId === s.id; }); });
-  var tabs = ["todo", "submitted", "published", "skipped"].map(function (k) {
-    return '<button type="button" data-action="q-tab" data-status="' + k + '" aria-pressed="' + (q.tab === k) + '">' + STATUS_LABEL[k] + " (" + counts[k] + ")</button>";
-  }).join("");
-  sec.innerHTML = '<div class="qhead"><div><h2 id="h-queue">Submit queue</h2><p class="muted" style="max-width:64ch;margin-top:4px">Websites that take articles but need a person to submit them (a CAPTCHA, a form, an account or an email). ' +
-    "The machine found each one and prepared the text. You paste it, solve any CAPTCHA and press Send. The ones that fit best come first.</p></div>" +
-    '<div><label class="visually-hidden" for="q-site">Website</label><select class="input" id="q-site"><option value="all">All websites</option>' +
-    sites.map(function (s) { return '<option value="' + esc(s.id) + '"' + (q.site === s.id ? " selected" : "") + ">" + esc(s.name) + "</option>"; }).join("") + "</select></div></div>" +
+function renderGuests() {
+  var g = state.guest, sec = $("#guest-section"), items = guestList();
+  var counts = guestCounts(items, g.site), view = guestView(items, g.site, g.tab), shown = view.slice(0, g.shown);
+  var sites = siteList();
+  var tabs = GUEST_TABS.map(function (k) { return '<button type="button" data-action="g-tab" data-status="' + k + '" aria-pressed="' + (g.tab === k) + '">' + GUEST_LABEL[k] + " (" + counts[k] + ")</button>"; }).join("");
+  sec.innerHTML = '<div class="qhead"><div><h2 id="h-guest">Guest posts</h2><p class="muted" style="max-width:64ch;margin-top:4px">Websites in each niche that clearly accept articles from outside authors and a link back. ' +
+    "Without a CAPTCHA the machine sends the form itself. With one, press Click to submit: the form fills itself and sends as soon as you tick the CAPTCHA.</p></div>" +
+    '<div><label class="visually-hidden" for="g-site">Website</label><select class="input" id="g-site"><option value="all">All websites</option>' +
+    sites.map(function (s) { return '<option value="' + esc(s.id) + '"' + (g.site === s.id ? " selected" : "") + ">" + esc(s.name) + "</option>"; }).join("") + "</select></div></div>" +
     '<div class="segmented" role="group" aria-label="Show" style="margin-bottom:14px;flex-wrap:wrap">' + tabs + "</div>" +
-    (shown.length ? '<div style="display:grid;gap:12px">' + shown.map(qCard).join("") + "</div>" : '<div class="card"><div class="empty">Nothing here yet.</div></div>') +
-    (view.length > shown.length ? '<div style="margin-top:14px;text-align:center"><button class="btn secondary" data-action="q-more">Show ' + Math.min(12, view.length - shown.length) + " more</button></div>" : "");
+    (shown.length ? '<div style="display:grid;gap:12px">' + shown.map(gCard).join("") + "</div>" :
+      '<div class="card"><div class="empty">' + (items.length ? "Nothing here." : "No guest posts yet. Every day the machine looks for websites that accept outside articles in each niche.") + "</div></div>") +
+    (view.length > shown.length ? '<div style="margin-top:14px;text-align:center"><button class="btn secondary" data-action="g-more">Show ' + Math.min(12, view.length - shown.length) + " more</button></div>" : "");
 }
-async function queueSet(id, change) {
+async function guestSet(id, change) {
   try {
-    if (state.demo) { state.queue.statuses = mergeAssistStatus(state.queue.statuses, id, change); }
-    else {
+    if (!state.demo) {
       for (var attempt = 0; attempt < 2; attempt++) {
-        var file = await ghGetFile("state/assist_status.json"), doc = file ? JSON.parse(file.content) : {};
-        var next = mergeAssistStatus(doc, id, change);
-        try { await ghPutFile("state/assist_status.json", JSON.stringify(next, null, 1) + "\n", "Dashboard: submit queue update", file ? file.sha : undefined); state.queue.statuses = next; break; }
+        var file = await ghGetFile("state/guestpost_status.json"), doc = file ? JSON.parse(file.content) : {};
+        var next = mergeGuestStatus(doc, id, change);
+        try { await ghPutFile("state/guestpost_status.json", JSON.stringify(next, null, 1) + "\n", "Dashboard: guest post " + change.status, file ? file.sha : undefined); break; }
         catch (e) { if (attempt === 1 || (e.status !== 409 && e.status !== 422)) throw e; }
       }
-    }
-    state.queue.items = buildQueue(groupBySite(state.queue.items), state.queue.statuses);
-    renderQueue(); toast(change.status === "todo" ? "Moved back to To do." : change.status === "skipped" ? "Skipped." : change.status === "submitted" ? "Marked as submitted." : "Saved. The link is checked at the next daily run.");
+    } else mergeGuestStatus({}, id, change);
+    state.guest.local[id] = change.status === "sent" ? { status: "sent", sent_on: new Date().toISOString().slice(0, 10), how: "by you (CAPTCHA)", link: null }
+      : { status: "published", publication_url: change.published_url };
+    renderGuests();
+    toast(change.status === "sent" ? "Recorded as sent." : "Saved. The link is checked at the next daily run.");
   } catch (e) { toast(e.message || "Could not save.", "error"); }
 }
-/** buildQueue wants the per-site files, so rebuild them from the items already loaded (their own fields, without the owner's status). */
-function groupBySite(items) {
-  var files = {};
-  items.forEach(function (i) { var copy = Object.assign({}, i); (files[i.siteId] = files[i.siteId] || {})[i.id] = copy; });
-  return files;
+/** The extension's "Back to the dashboard" link carries ?sent=<id>: record it, then clean the address. */
+function recordSentFromLink() {
+  var id = new URLSearchParams(location.search).get("sent");
+  if (!id) return;
+  try { history.replaceState(null, "", location.pathname); } catch (e) { /* ignore */ }
+  if (state.demo || !conn().token) return;
+  guestSet(id, { status: "sent" });
 }
 
 /* ---------- Modal ---------- */
@@ -1059,16 +1020,10 @@ document.addEventListener("click", async function (ev) {
   if (a === "signout") { localStorage.removeItem(LS_CONN); closeModal(); state.data = null; state.settings = null; render(); return toast("Signed out. The token was removed from this browser."); }
   if (a === "copy") { try { await navigator.clipboard.writeText(t.dataset.copy); toast("Copied " + t.dataset.copy); } catch (e) { toast("Copy failed. Select the name and copy it by hand.", "error"); } return; }
   if (a === "toggle-table") { state.chartTable = !state.chartTable; return renderChart(); }
-  if (a === "q-tab") { state.queue.tab = t.dataset.status; state.queue.shown = 12; return renderQueue(); }
-  if (a === "q-more") { state.queue.shown += 12; return renderQueue(); }
-  if (a === "q-status") return queueSet(t.dataset.q, { status: t.dataset.status });
-  if (a === "q-publish") { var urlBox = document.getElementById("q-url-" + t.dataset.q); return queueSet(t.dataset.q, { status: "published", published_url: urlBox ? urlBox.value.trim() : "" }); }
-  if (a === "q-copy") {
-    var it = qItem(t.dataset.q), part = t.dataset.part; if (!it) return;
-    var text = part === "details" ? [it.from_name, it.from_email, it.website].filter(Boolean).join("\n") : part === "article" ? it.body_markdown : part === "note" ? it.note : part === "title" ? it.title : it.description;
-    try { await navigator.clipboard.writeText(text || ""); toast("Copied."); } catch (e) { toast("Copy failed. Select the text and copy it by hand.", "error"); }
-    return;
-  }
+  if (a === "g-tab") { state.guest.tab = t.dataset.status; state.guest.shown = 12; return renderGuests(); }
+  if (a === "g-more") { state.guest.shown += 12; return renderGuests(); }
+  if (a === "g-sent") return guestSet(t.dataset.g, { status: "sent" });
+  if (a === "g-publish") { var urlBox = document.getElementById("g-url-" + t.dataset.g); return guestSet(t.dataset.g, { status: "published", published_url: urlBox ? urlBox.value.trim() : "" }); }
   if (a === "mode") { edit(id, { mode: t.dataset.mode }); return; }
   if (a === "reset") { delete state.edits[id]; return renderEdits(); }
   if (a === "clear-errors") { showErrors({}); return; }
@@ -1080,7 +1035,7 @@ document.addEventListener("click", async function (ev) {
 });
 document.addEventListener("change", function (ev) {
   var t = ev.target;
-  if (t.id === "q-site") { state.queue.site = t.value; state.queue.shown = 12; return renderQueue(); }
+  if (t.id === "g-site") { state.guest.site = t.value; state.guest.shown = 12; return renderGuests(); }
   if (!t.dataset || !t.dataset.site) return;
   if (t.dataset.field === "articles_per_day") edit(t.dataset.site, { articles_per_day: Number(t.value) });
   if (t.dataset.field === "enabled") edit(t.dataset.site, { enabled: t.checked });
@@ -1095,9 +1050,8 @@ document.addEventListener("submit", async function (ev) {
   }
 });
 document.addEventListener("input", function (ev) {
-  if (ev.target.id === "f-name") { var idEl = $("#f-id"), sec = $("#f-secretName"); if (idEl && !idEl.dataset.touched) { idEl.value = slugify(ev.target.value); if (sec && !sec.dataset.touched) sec.value = defaultSecretName(idEl.value); } }
-  if (ev.target.id === "f-id") { ev.target.dataset.touched = "1"; var s2 = $("#f-secretName"); if (s2 && !s2.dataset.touched) s2.value = defaultSecretName(ev.target.value); }
-  if (ev.target.id === "f-secretName") ev.target.dataset.touched = "1";
+  if (ev.target.id === "f-name") { var idEl = $("#f-id"); if (idEl && !idEl.dataset.touched) idEl.value = slugify(ev.target.value); }
+  if (ev.target.id === "f-id") ev.target.dataset.touched = "1";
   if (ev.target.id === "f-url") { var pg = $("#f-pages"); if (pg && !pg.value.trim() && /^https?:\/\/[^/]+\.[a-z]/i.test(ev.target.value)) pg.dataset.suggest = ev.target.value.replace(/\/+$/, "") + "/ | the homepage"; }
 });
 document.addEventListener("focusin", function (ev) { if (ev.target.id === "f-pages" && !ev.target.value.trim() && ev.target.dataset.suggest) ev.target.value = ev.target.dataset.suggest; });
