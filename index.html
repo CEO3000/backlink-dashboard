@@ -943,14 +943,15 @@ function gPublishBox(id) {
 function gCard(i) {
   var id = esc(i.id), action = "";
   if (i.status === "waiting" && i.link) action = '<div class="qrow"><a class="btn" href="' + esc(safeUrl(i.link)) + '" target="_blank" rel="noopener noreferrer">' + icon("ext") + 'Click to submit</a>' +
-    '<button class="btn quiet small" data-action="g-sent" data-g="' + id + '">I sent it</button></div><p class="hint">The page opens and fills itself. Tick the CAPTCHA and it sends by itself (needs the Backlink helper extension in Chrome).</p>';
+    '<button class="btn quiet small" data-action="g-sent" data-g="' + id + '">I sent it</button></div><p class="hint">The page opens and fills itself. ' + (i.human_check ? "Answer the small question it asks, and tick any CAPTCHA: " : "Tick the CAPTCHA: ") + "it sends by itself as soon as you do (needs the Backlink helper extension in Chrome)." +
+    (i.form_kind === "pitch" ? " This is an application: the editors read the pitch and ask for the article if they like it." : "") + "</p>";
   else if (i.status === "sent") action = '<div class="muted">Sent ' + esc(i.sent_on || "") + (i.how ? " (" + esc(i.how) + ")" : "") + ". The editor decides; replies go to the website's email. The system checks the site's sitemap for the article.</div>" + gPublishBox(id);
   else if (i.status === "published") action = '<div class="qrow"><a href="' + esc(safeUrl(i.publication_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.publication_url || "") + "</a>" +
     (i.counts_for_seo === true ? chip("ok", "Google can count it") : i.counts_for_seo === false ? chip("warn", "Hidden from Google") : '<span class="muted">The link is checked at the next daily run.</span>') + "</div>";
   else if (i.status === "not_accepted") action = '<div class="muted">' + esc(i.note || "") + "</div>";
   else if (i.status === "ready") action = '<div class="muted">The article is written. It is sent at the next run (or kept back while the website is in review mode).</div>';
   return '<article class="card qcard" aria-label="' + esc(i.domain) + '"><div class="qtitle"><a href="' + esc(safeUrl(i.form_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.domain) + "</a>" +
-    (i.captcha ? '<span class="chip info">CAPTCHA</span>' : '<span class="chip">No CAPTCHA</span>') + (i.relevance != null ? chip("ok", "Fit " + Math.round(i.relevance) + "/10") : "") +
+    (i.captcha ? '<span class="chip info">CAPTCHA</span>' : '<span class="chip">No CAPTCHA</span>') + (i.form_kind === "pitch" ? '<span class="chip warn">Pitch first</span>' : "") + (i.relevance != null ? chip("ok", "Fit " + Math.round(i.relevance) + "/10") : "") +
     '<span class="muted" style="margin-left:auto;font-size:.8rem">' + esc(siteName(i.siteId)) + "</span></div>" +
     (i.title ? '<div style="font-size:.9rem"><b>Article:</b> ' + esc(i.title) + "</div>" : "") +
     (i.accepts_quote ? '<div class="qtext">Accepts outside articles: \u201c' + esc(i.accepts_quote) + '\u201d\nLinks allowed: \u201c' + esc(i.links_quote || "") + '\u201d</div>' : "") +
