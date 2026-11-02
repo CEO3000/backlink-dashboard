@@ -572,7 +572,8 @@ async function ghApi(path, options) {
 }
 async function ghGetFile(path) {
   var c = conn();
-  try { var d = await ghApi("/repos/" + c.owner + "/" + c.repo + "/contents/" + path + "?ref=" + c.branch); return { content: b64decode(d.content), sha: d.sha }; }
+  // no-store: the browser keeps GitHub's answer for about a minute, and a second save started from that stale copy is refused (GitHub 409)
+  try { var d = await ghApi("/repos/" + c.owner + "/" + c.repo + "/contents/" + path + "?ref=" + c.branch, { cache: "no-store" }); return { content: b64decode(d.content), sha: d.sha }; }
   catch (e) { if (e.status === 404) return null; throw e; }
 }
 async function ghPutFile(path, content, message, sha) {
@@ -921,11 +922,11 @@ function renderGuests() { renderSites(); }
 async function guestSet(id, change) {
   try {
     if (!state.demo) {
-      for (var attempt = 0; attempt < 2; attempt++) {
+      for (var attempt = 0; attempt < 4; attempt++) {   // someone else (or the daily run) may have just saved it: read it again and retry
         var file = await ghGetFile("state/guestpost_status.json"), doc = file ? JSON.parse(file.content) : {};
         var next = mergeGuestStatus(doc, id, change);
         try { await ghPutFile("state/guestpost_status.json", JSON.stringify(next, null, 1) + "\n", "Dashboard: guest post " + change.status, file ? file.sha : undefined); break; }
-        catch (e) { if (attempt === 1 || (e.status !== 409 && e.status !== 422)) throw e; }
+        catch (e) { if (attempt === 3 || (e.status !== 409 && e.status !== 422)) throw e; await new Promise(function (r) { setTimeout(r, 800 * (attempt + 1)); }); }
       }
     } else mergeGuestStatus({}, id, change);
     state.guest.local[id] = change.status === "sent" ? { status: "sent", sent_on: new Date().toISOString().slice(0, 10), how: "by you (CAPTCHA)", link: null }
