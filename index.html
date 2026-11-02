@@ -882,8 +882,10 @@ function gPublishBox(id) {
 }
 function gCard(i) {
   var id = esc(i.id), action = "";
-  if (i.status === "waiting" && i.link) action = '<div class="qrow"><a class="btn" href="' + esc(safeUrl(i.link)) + '" target="_blank" rel="noopener noreferrer">' + icon("ext") + 'Click to submit</a>' +
-    '<button class="btn quiet small" data-action="g-sent" data-g="' + id + '">I sent it</button></div><p class="hint">The page opens and fills itself. ' + (i.human_check ? "Answer the small question it asks, and tick any CAPTCHA: " : "Tick the CAPTCHA: ") + "it sends by itself as soon as you do (needs the Backlink helper extension in Chrome on a computer)." +
+  var prefilled = i.link && i.link.indexOf("#bl=") < 0;   // a form hosted elsewhere (for example a Google Form) that opens already filled in
+  if (i.status === "waiting" && i.link) action = '<div class="qrow"><a class="btn" href="' + esc(safeUrl(i.link)) + '" target="_blank" rel="noopener noreferrer">' + icon("ext") + (prefilled ? "Open the filled form" : "Click to submit") + "</a>" +
+    '<button class="btn quiet small" data-action="g-sent" data-g="' + id + '">I sent it</button></div><p class="hint">' + (prefilled ? "The form opens already filled in (no extension needed, works on a phone too). Check it, press Submit, then tap I sent it." :
+    "The page opens and fills itself. " + (i.human_check ? "Answer the small question it asks, and tick any CAPTCHA: " : "Tick the CAPTCHA: ") + "it sends by itself as soon as you do (needs the Backlink helper extension in Chrome on a computer).") +
     (i.form_kind === "pitch" ? " This is an application: the editors read the pitch and ask for the article if they like it." : "") + "</p>" + gByHand(i);
   else if (i.status === "sent") action = '<div class="muted">Sent ' + esc(i.sent_on || "") + (i.how ? " (" + esc(i.how) + ")" : "") + ". The editor decides; replies go to the website's email. The system checks the site's sitemap for the article.</div>" + gPublishBox(id);
   else if (i.status === "published") action = '<div class="qrow"><a href="' + esc(safeUrl(i.publication_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.publication_url || "") + "</a>" +
