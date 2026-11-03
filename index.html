@@ -881,10 +881,23 @@ function gPublishBox(id) {
   return '<div class="qrow"><label class="visually-hidden" for="g-url-' + id + '">Published address</label><input class="input" type="url" id="g-url-' + id + '" placeholder="When it goes live, paste its address here (https://...)" value="' + esc(state.guest.urls[id] || "") + '">' +
     '<button class="btn small" data-action="g-publish" data-g="' + id + '">Save as published</button></div>';
 }
+/** An email the owner sends by hand (the website has no mailbox the system can send from): each part with a Copy button. */
+function gMailBox(i) {
+  var m = i.email_draft, id = esc(i.id);
+  var part = function (label, key, value) {
+    return '<div><div class="qrow" style="justify-content:space-between"><b style="font-size:.82rem">' + label + '</b><button class="btn quiet small" data-action="g-mail-copy" data-g="' + id + '" data-part="' + key + '">' + icon("copy") + "Copy</button></div>" +
+      '<div class="qtext">' + esc(String(value || "")) + "</div></div>";
+  };
+  return '<div style="display:grid;gap:10px"><p class="hint" style="margin:0">This website asks for guest posts by email. Send it from ' + esc(m.from || "the website\u2019s own address") +
+    ": copy each part into a new email, send it, then tap I sent it.</p>" + part("To", "to", m.to) + part("Subject", "subject", m.subject) + part("Message", "body", m.body) +
+    '<div class="qrow"><a class="btn secondary small" href="mailto:' + esc(encodeURIComponent(m.to || "")) + "?subject=" + esc(encodeURIComponent(m.subject || "")) + '">' + icon("ext") + "Open my email app</a>" +
+    '<button class="btn quiet small" data-action="g-sent" data-g="' + id + '">I sent it</button></div></div>';
+}
 function gCard(i) {
   var id = esc(i.id), action = "";
   var prefilled = i.link && i.link.indexOf("#bl=") < 0;   // a form hosted elsewhere (for example a Google Form) that opens already filled in
-  if (i.status === "waiting" && i.link) action = '<div class="qrow"><a class="btn" href="' + esc(safeUrl(i.link)) + '" target="_blank" rel="noopener noreferrer">' + icon("ext") + (prefilled ? "Open the filled form" : "Click to submit") + "</a>" +
+  if (i.status === "waiting" && i.email_draft) action = gMailBox(i);
+  else if (i.status === "waiting" && i.link) action = '<div class="qrow"><a class="btn" href="' + esc(safeUrl(i.link)) + '" target="_blank" rel="noopener noreferrer">' + icon("ext") + (prefilled ? "Open the filled form" : "Click to submit") + "</a>" +
     '<button class="btn quiet small" data-action="g-sent" data-g="' + id + '">I sent it</button></div><p class="hint">' + (prefilled ? "The form opens already filled in (no extension needed, works on a phone too). Check it, press Submit, then tap I sent it." :
     "The page opens and fills itself. " + (i.human_check ? "Answer the small question it asks, and tick any CAPTCHA: " : "Tick the CAPTCHA: ") + "it sends by itself as soon as you do (needs the Backlink helper extension in Chrome on a computer).") +
     (i.form_kind === "pitch" ? " This is an application: the editors read the pitch and ask for the article if they like it." : "") + "</p>" + gByHand(i);
@@ -894,7 +907,7 @@ function gCard(i) {
   else if (i.status === "not_accepted") action = '<div class="muted">' + esc(i.note || "") + "</div>";
   else if (i.status === "ready") action = '<div class="muted">The article is written. It is sent at the next run (or kept back while the website is in review mode).</div>';
   return '<article class="card qcard" aria-label="' + esc(i.domain) + '"><div class="qtitle"><a href="' + esc(safeUrl(i.form_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.domain) + "</a>" +
-    (i.captcha ? '<span class="chip info">CAPTCHA</span>' : '<span class="chip">No CAPTCHA</span>') + (i.form_kind === "pitch" ? '<span class="chip warn">Pitch first</span>' : "") + (i.relevance != null ? chip("ok", "Fit " + Math.round(i.relevance) + "/10") : "") +
+    (i.route === "email" ? '<span class="chip info">By email</span>' : i.captcha ? '<span class="chip info">CAPTCHA</span>' : '<span class="chip">No CAPTCHA</span>') + (i.form_kind === "pitch" ? '<span class="chip warn">Pitch first</span>' : "") + (i.relevance != null ? chip("ok", "Fit " + Math.round(i.relevance) + "/10") : "") +
     "</div>" +
     (i.title ? '<div style="font-size:.9rem"><b>Article:</b> ' + esc(i.title) + "</div>" : "") +
     (i.accepts_quote ? '<div class="qtext">Accepts outside articles: \u201c' + esc(i.accepts_quote) + '\u201d\nLinks allowed: \u201c' + esc(i.links_quote || "") + '\u201d</div>' : "") +
@@ -971,6 +984,12 @@ document.addEventListener("click", async function (ev) {
   if (a === "g-tab") { state.guest.tab[t.dataset.site] = t.dataset.status; state.guest.shown[t.dataset.site] = 12; return renderGuests(); }
   if (a === "g-more") { state.guest.shown[t.dataset.site] = (state.guest.shown[t.dataset.site] || 12) + 12; return renderGuests(); }
   if (a === "g-sent") return guestSet(t.dataset.g, { status: "sent" });
+  if (a === "g-mail-copy") {
+    var mi = guestList().filter(function (x) { return x.id === t.dataset.g; })[0], md = mi && mi.email_draft;
+    if (!md) return;
+    try { await navigator.clipboard.writeText(String(md[t.dataset.part] || "")); toast("Copied."); } catch (e) { toast("Copy failed. Select the text and copy it by hand.", "error"); }
+    return;
+  }
   if (a === "g-copy") {
     var gi = guestList().filter(function (x) { return x.id === t.dataset.g; })[0], gp = gi && guestPayload(gi.link), gf = gp && gp.fields[Number(t.dataset.i)];
     if (!gf) return;
