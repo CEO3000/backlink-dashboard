@@ -678,6 +678,13 @@ function renderAlerts() {
     items.push({ kind: "info", title: nWait + (nWait === 1 ? " guest post is" : " guest posts are") + " waiting for your click", body: "Open the website below and press Click to submit.",
       list: waitingBy.map(function (w) { return w.s.name + ": " + w.n; }) });
   }
+  var todayIso = new Date().toISOString().slice(0, 10);
+  var sentBy = siteList().map(function (s) { return { s: s, list: guestList().filter(function (i) { return i.siteId === s.id && i.status === "sent" && i.sent_on === todayIso; }) }; }).filter(function (x) { return x.list.length; });
+  if (sentBy.length) {
+    var nSent = sentBy.reduce(function (a, x) { return a + x.list.length; }, 0);
+    items.push({ kind: "info", title: nSent + (nSent === 1 ? " guest post was" : " guest posts were") + " sent today", body: "Replies come to each website\u2019s own email address. Details are in the website\u2019s Guest posts, under Sent.",
+      list: sentBy.map(function (x) { return x.s.name + ": " + x.list.map(function (i) { return i.domain + (i.how ? " (" + i.how + ")" : ""); }).join(", "); }) });
+  }
   var gem = estimateGemini(Object.fromEntries(siteList().map(function (s) { return [s.id, effective(s)]; })));
   if (gem.requests > gem.limit) items.push({ kind: "warn", title: "This plan may use more Gemini requests than the free limit", body: "About " + gem.requests + " requests a day are needed and the free allowance is about " + gem.limit + ". Some articles may wait until the next day." });
   $("#alerts").innerHTML = items.map(function (a) {
@@ -901,10 +908,12 @@ function gCard(i) {
     '<button class="btn quiet small" data-action="g-sent" data-g="' + id + '">I sent it</button></div><p class="hint">' + (prefilled ? "The form opens already filled in (no extension needed, works on a phone too). Check it, press Submit, then tap I sent it." :
     "The page opens and fills itself. " + (i.human_check ? "Answer the small question it asks, and tick any CAPTCHA: " : "Tick the CAPTCHA: ") + "it sends by itself as soon as you do (needs the Backlink helper extension in Chrome on a computer).") +
     (i.form_kind === "pitch" ? " This is an application: the editors read the pitch and ask for the article if they like it." : "") + "</p>" + gByHand(i);
-  else if (i.status === "sent") action = '<div class="muted">Sent ' + esc(i.sent_on || "") + (i.how ? " (" + esc(i.how) + ")" : "") + ". The editor decides; replies go to the website's email. The system checks the site's sitemap for the article.</div>" + gPublishBox(id);
+  else if (i.status === "sent") action = '<div class="muted">Sent ' + esc(i.sent_on || "") + (i.how ? " (" + esc(i.how) + (i.email_to ? " to " + esc(i.email_to) : "") + ")" : "") + ". The editor decides; replies go to the website's email. The system checks the site's sitemap for the article.</div>" + gPublishBox(id);
   else if (i.status === "published") action = '<div class="qrow"><a href="' + esc(safeUrl(i.publication_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.publication_url || "") + "</a>" +
     (i.counts_for_seo === true ? chip("ok", "Google can count it") : i.counts_for_seo === false ? chip("warn", "Hidden from Google") : '<span class="muted">The link is checked at the next daily run.</span>') + "</div>";
-  else if (i.status === "not_accepted") action = '<div class="muted">' + esc(i.note || "") + "</div>";
+  if (i.status === "sent" && i.email_sent) action += '<details class="fold"><summary>' + icon("chev") + " What was sent</summary><div class=\"fold-body\" style=\"display:grid;gap:8px\">" +
+    '<div><b style="font-size:.82rem">Subject</b><div class="qtext">' + esc(i.email_sent.subject || "") + '</div></div><div><b style="font-size:.82rem">Message</b><div class="qtext">' + esc(i.email_sent.body || "") + "</div></div></div></details>";
+  if (i.status === "not_accepted") action = '<div class="muted">' + esc(i.note || "") + "</div>";
   else if (i.status === "ready") action = '<div class="muted">The article is written. It is sent at the next run (or kept back while the website is in review mode).</div>';
   return '<article class="card qcard" aria-label="' + esc(i.domain) + '"><div class="qtitle"><a href="' + esc(safeUrl(i.form_url)) + '" target="_blank" rel="noopener noreferrer">' + esc(i.domain) + "</a>" +
     (i.route === "email" ? '<span class="chip info">By email</span>' : i.captcha ? '<span class="chip info">CAPTCHA</span>' : '<span class="chip">No CAPTCHA</span>') + (i.form_kind === "pitch" ? '<span class="chip warn">Pitch first</span>' : "") + (i.relevance != null ? chip("ok", "Fit " + Math.round(i.relevance) + "/10") : "") +
@@ -917,9 +926,10 @@ function gCard(i) {
     again after every change, so what the owner did here (open or shut, which tab, an address being typed) is remembered in state.guest. */
 function guestFold(s) {
   var g = state.guest, items = guestList().filter(function (i) { return i.siteId === s.id; }), counts = guestCounts(items, s.id);
-  var tab = g.tab[s.id] || (counts.waiting ? "waiting" : GUEST_TABS.filter(function (k) { return counts[k]; })[0] || "waiting");
+  var today = new Date().toISOString().slice(0, 10), sentToday = items.some(function (i) { return i.status === "sent" && i.sent_on === today; });
+  var tab = g.tab[s.id] || (counts.waiting ? "waiting" : sentToday ? "sent" : GUEST_TABS.filter(function (k) { return counts[k]; })[0] || "waiting");
   var view = guestView(items, s.id, tab), shown = view.slice(0, g.shown[s.id] || 12);
-  var open = g.open[s.id] != null ? g.open[s.id] : counts.waiting > 0;
+  var open = g.open[s.id] != null ? g.open[s.id] : counts.waiting > 0 || sentToday;   // open while something waits, and on a day something was sent
   var tabs = GUEST_TABS.map(function (k) { return '<button type="button" data-action="g-tab" data-site="' + esc(s.id) + '" data-status="' + k + '" aria-pressed="' + (tab === k) + '">' + GUEST_LABEL[k] + " (" + counts[k] + ")</button>"; }).join("");
   return '<details class="fold" data-guest-site="' + esc(s.id) + '"' + (open ? " open" : "") + "><summary>" + icon("ext") + " Guest posts " +
     (counts.waiting ? chip("warn", counts.waiting + " waiting for you") : '<span class="chip info">' + items.length + "</span>") + '<span class="chev">' + icon("chev") + '</span></summary><div class="fold-body">' +
